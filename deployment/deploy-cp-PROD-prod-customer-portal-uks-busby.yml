@@ -1,0 +1,466 @@
+trigger: none
+
+resources:
+  repositories:
+  - repository: release
+    type: git
+    name: Samsung/ReleaseVersion
+    trigger: none
+    ref: refs/heads/main
+  - repository: helm
+    type: git
+    name: Samsung/helms
+    trigger: none
+    ref: refs/heads/main
+
+variables:
+  customer: 'busby'
+  environment: 'prod'
+  region: 'uks'
+  namespace: 'prod-customer-portal'
+  serviceConnectionName: 'glow-busby-subs'
+  kubernetesClusterResourceGroup: "rg-prod-uks-busby"
+  kubernetesClusterName: "prod-uks-busby"
+  chartPath: "helms/helms/customer-portal"
+
+name: deploy-customer-portal-services-PROD-uks-busby-$(date:yyyyMMdd)-buildID-$(Build.BuildId)
+
+stages:
+- stage: Deploy_release
+  pool: GlowProdPool
+  jobs:
+  - deployment: Deploy
+    environment: 'EE_UKS_PROD_CP'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - checkout: self
+          - checkout: helm
+          - checkout: release
+
+          - task: AzureKeyVault@2
+            displayName: 'Export Azure Key Vault secrets from kv-$(environment)-$(region)-$(customer)'
+            inputs:
+              azureSubscription: $(serviceConnectionName)
+              KeyVaultName: kv-$(environment)-$(region)-$(customer)
+              RunAsPreJob: true
+
+          - task: AzureCLI@2
+            displayName: 'Set commitHash'
+            inputs:
+              azureSubscription: $(serviceConnectionName)
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                cd helms
+                commitHash=$(git rev-parse --short HEAD)
+                echo "##vso[task.setvariable variable=commitHash]$commitHash"
+                echo "$commitHash"
+
+          - task: KubectlInstaller@0
+            displayName: 'Install Kubectl 1.27.3'
+            inputs: 
+              kubectlVersion: 1.27.3 
+
+          - task: HelmInstaller@1
+            displayName: 'Install Helm 3.10.0'
+            inputs:
+              helmVersionToInstall: 3.10.0
+              
+          - template: templates/ps.set_images.yml
+            parameters:
+              customer: "$(customer)"
+              environment: "$(environment)"
+              region: "$(region)"
+              namespace: "$(namespace)"
+
+          - template: templates/task.map_kv_helm.yml
+            parameters:
+              serviceConnectionName: "$(serviceConnectionName)"
+
+          # redis
+          - task: KubectlInstaller@0
+            displayName: 'Install Kubectl 1.27.3'
+            inputs:
+              kubectlVersion: 1.27.3
+          - bash: |
+              helm repo add azure-marketplace https://marketplace.azurecr.io/helm/v1/repo
+            displayName: 'Add helm repo'
+          - task: HelmDeploy@0
+            displayName: 'Helm install redis'
+            inputs:
+              azureSubscription: '$(serviceConnectionName)'
+              azureResourceGroup: '$(kubernetesClusterResourceGroup)'
+              kubernetesCluster: '$(kubernetesClusterName)'
+              useClusterAdmin: true
+              namespace: '$(namespace)'
+              command: upgrade
+              chartName: 'azure-marketplace/redis'
+              releaseName: redis
+              overrideValues: 'auth.password=secretpassword,architecture=standalone,global.redis.password=secretpassword,auth.enabled=true'
+              force: true
+
+          # cp-strapi
+          - template: templates/application.yml
+            parameters:
+              serviceName: "cp-strapi"
+              imageRepository: "$(imageRepository)/cp-strapi"
+              imageTag: "$(cp-strapiCI)"
+              chartPath: "$(chartPath)"
+              serviceConnectionName: "$(serviceConnectionName)"
+              kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+              kubernetesClusterName: "$(kubernetesClusterName)"
+              namespace: "$(namespace)"
+              commitHash: "$(commitHash)"
+              TempVars: "$(TempVars)"
+
+          # cp-access-token-service
+          - template: templates/application.yml
+            parameters:
+              serviceName: "cp-access-token-service"
+              imageRepository: "$(imageRepository)/cp-access-token-service"
+              imageTag: "$(cp-access-token-serviceCI)"
+              chartPath: "$(chartPath)"
+              serviceConnectionName: "$(serviceConnectionName)"
+              kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+              kubernetesClusterName: "$(kubernetesClusterName)"
+              namespace: "$(namespace)"
+              commitHash: "$(commitHash)"
+              TempVars: "$(TempVars)"
+
+          # cp-addresses
+          - template: templates/application.yml
+            parameters:
+              serviceName: "cp-addresses"
+              imageRepository: "$(imageRepository)/cp-addresses"
+              imageTag: "$(cp-addressesCI)"
+              chartPath: "$(chartPath)"
+              serviceConnectionName: "$(serviceConnectionName)"
+              kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+              kubernetesClusterName: "$(kubernetesClusterName)"
+              namespace: "$(namespace)"
+              commitHash: "$(commitHash)"
+              TempVars: "$(TempVars)"
+
+          # cp-adyen-proxy
+          - template: templates/application.yml
+            parameters:
+              serviceName: "cp-adyen-proxy"
+              imageRepository: "$(imageRepository)/cp-adyen-proxy"
+              imageTag: "$(cp-adyen-proxyCI)"
+              chartPath: "$(chartPath)"
+              serviceConnectionName: "$(serviceConnectionName)"
+              kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+              kubernetesClusterName: "$(kubernetesClusterName)"
+              namespace: "$(namespace)"
+              commitHash: "$(commitHash)"
+              TempVars: "$(TempVars)"
+
+          # cp-adyen-service
+          - template: templates/application.yml
+            parameters:
+              serviceName: "cp-adyen-service"
+              imageRepository: "$(imageRepository)/cp-adyen-service"
+              imageTag: "$(cp-adyen-serviceCI)"
+              chartPath: "$(chartPath)"
+              serviceConnectionName: "$(serviceConnectionName)"
+              kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+              kubernetesClusterName: "$(kubernetesClusterName)"
+              namespace: "$(namespace)"
+              commitHash: "$(commitHash)"
+              TempVars: "$(TempVars)"
+
+          # cp-apigw
+          - template: templates/application.yml
+            parameters:
+              serviceName: "cp-apigw"
+              imageRepository: "$(imageRepository)/cp-apigw"
+              imageTag: "$(cp-apigwCI)"
+              chartPath: "$(chartPath)"
+              serviceConnectionName: "$(serviceConnectionName)"
+              kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+              kubernetesClusterName: "$(kubernetesClusterName)"
+              namespace: "$(namespace)"
+              commitHash: "$(commitHash)"
+              TempVars: "$(TempVars)"
+
+          # cp-aryza
+          - template: templates/application.yml
+            parameters:
+              serviceName: "cp-aryza"
+              imageRepository: "$(imageRepository)/cp-aryza"
+              imageTag: "$(cp-aryzaCI)"
+              chartPath: "$(chartPath)"
+              serviceConnectionName: "$(serviceConnectionName)"
+              kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+              kubernetesClusterName: "$(kubernetesClusterName)"
+              namespace: "$(namespace)"
+              commitHash: "$(commitHash)"
+              TempVars: "$(TempVars)"
+
+          # cp-auth-api
+          - template: templates/application.yml
+            parameters:
+              serviceName: "cp-auth-api"
+              imageRepository: "$(imageRepository)/cp-auth-api"
+              imageTag: "$(cp-auth-apiCI)"
+              chartPath: "$(chartPath)"
+              serviceConnectionName: "$(serviceConnectionName)"
+              kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+              kubernetesClusterName: "$(kubernetesClusterName)"
+              namespace: "$(namespace)"
+              commitHash: "$(commitHash)"
+              TempVars: "$(TempVars)"
+
+          # cp-ca-impersonation
+          - template: templates/application.yml
+            parameters:
+              serviceName: "cp-ca-impersonation"
+              imageRepository: "$(imageRepository)/cp-ca-impersonation"
+              imageTag: "$(cp-ca-impersonationCI)"
+              chartPath: "$(chartPath)"
+              serviceConnectionName: "$(serviceConnectionName)"
+              kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+              kubernetesClusterName: "$(kubernetesClusterName)"
+              namespace: "$(namespace)"
+              commitHash: "$(commitHash)"
+              TempVars: "$(TempVars)"
+
+          # cp-sq
+          - template: templates/application.yml
+            parameters:
+              serviceName: "cp-sq"
+              imageRepository: "$(imageRepository)/cp-sq"
+              imageTag: "$(cp-sqCI)"
+              chartPath: "$(chartPath)"
+              serviceConnectionName: "$(serviceConnectionName)"
+              kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+              kubernetesClusterName: "$(kubernetesClusterName)"
+              namespace: "$(namespace)"
+              commitHash: "$(commitHash)"
+              TempVars: "$(TempVars)"
+
+          # cp-customer-device-native
+          - template: templates/application.yml
+            parameters:
+              serviceName: "cp-customer-device-native"
+              imageRepository: "$(imageRepository)/cp-customer-device-native"
+              imageTag: "$(cp-customer-device-nativeCI)"
+              chartPath: "$(chartPath)"
+              serviceConnectionName: "$(serviceConnectionName)"
+              kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+              kubernetesClusterName: "$(kubernetesClusterName)"
+              namespace: "$(namespace)"
+              commitHash: "$(commitHash)"
+              TempVars: "$(TempVars)"
+
+          # cp-customer-info-native
+          - template: templates/application.yml
+            parameters:
+              serviceName: "cp-customer-info-native"
+              imageRepository: "$(imageRepository)/cp-customer-info-native"
+              imageTag: "$(cp-customer-info-nativeCI)"
+              chartPath: "$(chartPath)"
+              serviceConnectionName: "$(serviceConnectionName)"
+              kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+              kubernetesClusterName: "$(kubernetesClusterName)"
+              namespace: "$(namespace)"
+              commitHash: "$(commitHash)"
+              TempVars: "$(TempVars)"
+
+          # cp-customer-info-proxy
+          - template: templates/application.yml
+            parameters:
+              serviceName: "cp-customer-info-proxy"
+              imageRepository: "$(imageRepository)/cp-customer-info-proxy"
+              imageTag: "$(cp-customer-info-proxyCI)"
+              chartPath: "$(chartPath)"
+              serviceConnectionName: "$(serviceConnectionName)"
+              kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+              kubernetesClusterName: "$(kubernetesClusterName)"
+              namespace: "$(namespace)"
+              commitHash: "$(commitHash)"
+              TempVars: "$(TempVars)"
+
+          # cp-customer-record
+          - template: templates/application.yml
+            parameters:
+              serviceName: "cp-customer-record"
+              imageRepository: "$(imageRepository)/cp-customer-record"
+              imageTag: "$(cp-customer-recordCI)"
+              chartPath: "$(chartPath)"
+              serviceConnectionName: "$(serviceConnectionName)"
+              kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+              kubernetesClusterName: "$(kubernetesClusterName)"
+              namespace: "$(namespace)"
+              commitHash: "$(commitHash)"
+              TempVars: "$(TempVars)"
+
+          # # cp-devices
+          # - template: templates/application.yml
+          #   parameters:
+          #     serviceName: "cp-devices"
+          #     imageRepository: "$(imageRepository)/cp-devices"
+          #     imageTag: "$(cp-devicesCI)"
+          #     chartPath: "$(chartPath)"
+          #     serviceConnectionName: "$(serviceConnectionName)"
+          #     kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+          #     kubernetesClusterName: "$(kubernetesClusterName)"
+          #     namespace: "$(namespace)"
+          #     commitHash: "$(commitHash)"
+          #     TempVars: "$(TempVars)"
+
+          # cp-email-service
+          - template: templates/application.yml
+            parameters:
+              serviceName: "cp-email-service"
+              imageRepository: "$(imageRepository)/cp-email-service"
+              imageTag: "$(cp-email-serviceCI)"
+              chartPath: "$(chartPath)"
+              serviceConnectionName: "$(serviceConnectionName)"
+              kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+              kubernetesClusterName: "$(kubernetesClusterName)"
+              namespace: "$(namespace)"
+              commitHash: "$(commitHash)"
+              TempVars: "$(TempVars)"
+
+          # cp-file-storage
+          - template: templates/application.yml
+            parameters:
+              serviceName: "cp-file-storage"
+              imageRepository: "$(imageRepository)/cp-file-storage"
+              imageTag: "$(cp-file-storageCI)"
+              chartPath: "$(chartPath)"
+              serviceConnectionName: "$(serviceConnectionName)"
+              kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+              kubernetesClusterName: "$(kubernetesClusterName)"
+              namespace: "$(namespace)"
+              commitHash: "$(commitHash)"
+              TempVars: "$(TempVars)"
+
+          # cp-loan-proxy
+          - template: templates/application.yml
+            parameters:
+              serviceName: "cp-loan-proxy"
+              imageRepository: "$(imageRepository)/cp-loan-proxy"
+              imageTag: "$(cp-loan-proxyCI)"
+              chartPath: "$(chartPath)"
+              serviceConnectionName: "$(serviceConnectionName)"
+              kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+              kubernetesClusterName: "$(kubernetesClusterName)"
+              namespace: "$(namespace)"
+              commitHash: "$(commitHash)"
+              TempVars: "$(TempVars)"
+
+          # cp-local
+          - template: templates/application.yml
+            parameters:
+              serviceName: "cp-local"
+              imageRepository: "$(imageRepository)/cp-local"
+              imageTag: "$(cp-localCI)"
+              chartPath: "$(chartPath)"
+              serviceConnectionName: "$(serviceConnectionName)"
+              kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+              kubernetesClusterName: "$(kubernetesClusterName)"
+              namespace: "$(namespace)"
+              commitHash: "$(commitHash)"
+              TempVars: "$(TempVars)"
+
+          # cp-payment-proxy
+          - template: templates/application.yml
+            parameters:
+              serviceName: "cp-payment-proxy"
+              imageRepository: "$(imageRepository)/cp-payment-proxy"
+              imageTag: "$(cp-payment-proxyCI)"
+              chartPath: "$(chartPath)"
+              serviceConnectionName: "$(serviceConnectionName)"
+              kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+              kubernetesClusterName: "$(kubernetesClusterName)"
+              namespace: "$(namespace)"
+              commitHash: "$(commitHash)"
+              TempVars: "$(TempVars)"
+
+          # cp-phone-verification
+          - template: templates/application.yml
+            parameters:
+              serviceName: "cp-phone-verification"
+              imageRepository: "$(imageRepository)/cp-phone-verification"
+              imageTag: "$(cp-phone-verificationCI)"
+              chartPath: "$(chartPath)"
+              serviceConnectionName: "$(serviceConnectionName)"
+              kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+              kubernetesClusterName: "$(kubernetesClusterName)"
+              namespace: "$(namespace)"
+              commitHash: "$(commitHash)"
+              TempVars: "$(TempVars)"
+
+          # cp-sms-sender
+          - template: templates/application.yml
+            parameters:
+              serviceName: "cp-sms-sender"
+              imageRepository: "$(imageRepository)/cp-sms-sender"
+              imageTag: "$(cp-sms-senderCI)"
+              chartPath: "$(chartPath)"
+              serviceConnectionName: "$(serviceConnectionName)"
+              kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+              kubernetesClusterName: "$(kubernetesClusterName)"
+              namespace: "$(namespace)"
+              commitHash: "$(commitHash)"
+              TempVars: "$(TempVars)"
+
+          # cp-ui
+          - template: templates/application.yml
+            parameters:
+              serviceName: "cp-ui"
+              imageRepository: "$(imageRepository)/cp-ui"
+              imageTag: "$(cp-uiCI)"
+              chartPath: "$(chartPath)"
+              serviceConnectionName: "$(serviceConnectionName)"
+              kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+              kubernetesClusterName: "$(kubernetesClusterName)"
+              namespace: "$(namespace)"
+              commitHash: "$(commitHash)"
+              TempVars: "$(TempVars)"
+
+          # cp-documents-proxy
+          - template: templates/application.yml
+            parameters:
+              serviceName: "cp-documents-proxy"
+              imageRepository: "$(imageRepository)/cp-documents-proxy"
+              imageTag: "$(cp-documents-proxyCI)"
+              chartPath: "$(chartPath)"
+              serviceConnectionName: "$(serviceConnectionName)"
+              kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+              kubernetesClusterName: "$(kubernetesClusterName)"
+              namespace: "$(namespace)"
+              commitHash: "$(commitHash)"
+              TempVars: "$(TempVars)"
+
+          # # cp-email-management-portal
+          # - template: templates/application.yml
+          #   parameters:
+          #     serviceName: "cp-email-management-portal"
+          #     imageRepository: "$(imageRepository)/ins-temlate-management-api"
+          #     imageTag: "$(cp-email-management-portalCI)"
+          #     chartPath: "$(chartPath)"
+          #     serviceConnectionName: "$(serviceConnectionName)"
+          #     kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+          #     kubernetesClusterName: "$(kubernetesClusterName)"
+          #     namespace: "$(namespace)"
+          #     commitHash: "$(commitHash)"
+          #     TempVars: "$(TempVars)"
+
+          # # cp-email-management-ui
+          # - template: templates/application.yml
+          #   parameters:
+          #     serviceName: "cp-email-management-ui"
+          #     imageRepository: "$(imageRepository)/ins-temlate-management-ui"
+          #     imageTag: "$(cp-email-management-uiCI)"
+          #     chartPath: "$(chartPath)"
+          #     serviceConnectionName: "$(serviceConnectionName)"
+          #     kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+          #     kubernetesClusterName: "$(kubernetesClusterName)"
+          #     namespace: "$(namespace)"
+          #     commitHash: "$(commitHash)"
+          #     TempVars: "$(TempVars)"

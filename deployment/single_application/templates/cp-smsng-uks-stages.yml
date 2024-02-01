@@ -1,0 +1,68 @@
+stages:
+- stage: SMSNG_UKS_DEV_deploy
+  pool:
+    name: GlowMainBuildAgent
+    demands:
+      - agent.name -equals InsuranceAgent
+  dependsOn: SMSNG_UKS_preparing
+  condition: and(succeeded(), eq(stageDependencies.SMSNG_UKS_preparing.outputs['Define_variables.passOutput.environment'], 'dev'))
+  jobs:
+  - deployment: DeployJob_SMSNG_UKS_DEV
+    environment: 'SMSNG_UKS_DEV_CP'
+    variables:
+      environment: $[stageDependencies.SMSNG_UKS_preparing.Define_variables.outputs['passOutput.environment']]
+      namespace: $[stageDependencies.SMSNG_UKS_preparing.Define_variables.outputs['passOutput.namespace']]
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - checkout: self
+          - checkout: helm
+          - checkout: release
+            persistCredentials: true
+            clean: true
+          - template: cp-smsng-uks-deploy-stage.yml
+            parameters:
+              serviceConnectionName: "$(serviceConnectionName_SMSNG_UKS)"
+              environment: "$(environment)"
+              namespace: "$(namespace)"
+
+- stage: SMSNG_UKS_QA_deploy
+  pool:
+    name: GlowMainBuildAgent
+    demands:
+      - agent.name -equals InsuranceAgent
+  dependsOn: SMSNG_UKS_preparing
+  condition: and(succeeded(), eq(stageDependencies.SMSNG_UKS_preparing.outputs['Define_variables.passOutput.environment'], 'qa'))
+  jobs:
+  - deployment: DeployJob_SMSNG_UKS_QA
+    environment: 'SMSNG_UKS_QA_CP'
+    variables:
+      environment: $[stageDependencies.SMSNG_UKS_preparing.Define_variables.outputs['passOutput.environment']]
+      namespace: $[stageDependencies.SMSNG_UKS_preparing.Define_variables.outputs['passOutput.namespace']]
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - checkout: self
+          - checkout: helm
+          - checkout: release
+            persistCredentials: true
+            clean: true
+          - template: cp-smsng-uks-deploy-stage.yml
+            parameters:
+              serviceConnectionName: "$(serviceConnectionName_SMSNG_UKS)"
+              environment: "$(environment)"
+              namespace: "$(namespace)"
+
+- stage: placeholder_smoke_tests_SMSNG_UKS_QA
+  pool:
+    name: GlowMainBuildAgent
+    demands:
+      - agent.name -equals InsuranceAgent
+  dependsOn: SMSNG_UKS_QA_deploy
+  jobs:
+  - job: Smoke_tests_SMSNG_UKS_QA
+    steps:
+    - script: echo 'Starting deployment'
+      displayName: 'Print a message'

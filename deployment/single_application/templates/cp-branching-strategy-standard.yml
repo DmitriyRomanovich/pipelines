@@ -1,0 +1,19 @@
+steps:
+  - bash: |
+      echo $(source_branch)
+      if [ "$(source_branch)" = "refs/heads/main" ]; then
+        echo "Source is main branch."
+        # echo "##vso[task.setvariable variable=environment;isoutput=true]stg"
+        # echo "##vso[task.setvariable variable=namespace;isoutput=true]stg-customer-portal"
+      elif [ "$(source_branch)" = "refs/heads/development" ]; then
+        echo "Source is development branch"
+        echo "##vso[task.setvariable variable=environment;isoutput=true]dev"
+        echo "##vso[task.setvariable variable=namespace;isoutput=true]dev-customer-portal"
+      elif [[ "$(source_branch)" == refs/heads/release/* || "$(source_branch)" == refs/heads/Release/* ]]; then
+        echo "Source is release branch"
+        echo "##vso[task.setvariable variable=environment;isoutput=true]qa"
+        echo "##vso[task.setvariable variable=namespace;isoutput=true]qa-customer-portal"
+      else
+        echo "Environment variables are not defined for the source."  
+      fi
+    name: passOutput

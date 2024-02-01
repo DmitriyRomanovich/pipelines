@@ -1,0 +1,22 @@
+parameters:
+  - name: serviceConnectionName
+  - name: kubernetesClusterResourceGroup
+  - name: kubernetesClusterName
+  - name: namespace
+  - name: serviceName
+  - name: continueOnError
+    default: true
+
+steps:
+  - task: HelmDeploy@0
+    displayName: 'helm delete ${{ parameters.serviceName }}'
+    continueOnError: ${{ parameters.continueOnError }}
+    inputs:
+      command: delete
+      azureSubscription: ${{ parameters.serviceConnectionName }}
+      azureResourceGroup: ${{ parameters.kubernetesClusterResourceGroup }}
+      kubernetesCluster: ${{ parameters.kubernetesClusterName }}
+      useClusterAdmin: true
+      namespace: ${{ parameters.namespace }}
+      arguments: "${{ parameters.serviceName }}"
+      failOnStderr: "${{ parameters.continueOnError }}"

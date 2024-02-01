@@ -1,0 +1,25 @@
+stages:
+- stage: SMSNG_AUE_DEV_deploy
+  pool: GlowDevPool
+  dependsOn: SMSNG_AUE_preparing
+  condition: and(succeeded(), eq(stageDependencies.SMSNG_AUE_preparing.outputs['Define_variables.passOutput.environment'], 'dev'))
+  jobs:
+  - deployment: DeployJob_SMSNG_AUE_DEV
+    environment: 'SMSNG_AUE_DEV_CP'
+    variables:
+      environment: $[stageDependencies.SMSNG_AUE_preparing.Define_variables.outputs['passOutput.environment']]
+      namespace: $[stageDependencies.SMSNG_AUE_preparing.Define_variables.outputs['passOutput.namespace']]
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - checkout: self
+          - checkout: helm
+          - checkout: release
+            persistCredentials: true
+            clean: true
+          - template: cp-smsng-aue-deploy-stage.yml
+            parameters:
+              serviceConnectionName: "$(serviceConnectionName_SMSNG_AUE)"
+              environment: "$(environment)"
+              namespace: "$(namespace)"

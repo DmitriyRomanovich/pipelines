@@ -1,0 +1,76 @@
+parameters:
+  - name: serviceConnectionName
+  - name: environment
+  - name: namespace
+  - name: kubernetesClusterName
+    default: 'dev-aue-smsng'
+  - name: kubernetesClusterResourceGroup
+    default: 'rg-dev-aue-smsng'
+  - name: customer
+    default: 'smsng'
+  - name: region
+    default: 'aue'
+
+steps:
+  - bash: echo "$(resources.pipeline.build_pipeline.runName)"
+
+  - task: AzureKeyVault@2
+    displayName: 'Export Azure Key Vault secrets from kv-${{ parameters.environment }}-${{ parameters.region }}-${{ parameters.customer }}'
+    inputs:
+      azureSubscription: ${{ parameters.serviceConnectionName }}
+      KeyVaultName: kv-${{ parameters.environment }}-${{ parameters.region }}-${{ parameters.customer }}
+      RunAsPreJob: true
+
+  - task: AzureCLI@2
+    displayName: 'Set commitHash'
+    inputs:
+      azureSubscription: ${{ parameters.serviceConnectionName }}
+      scriptType: bash
+      scriptLocation: inlineScript
+      inlineScript: |
+        cd helms
+        commitHash=$(git rev-parse --short HEAD)
+        echo "##vso[task.setvariable variable=commitHash]$commitHash"
+        echo "$commitHash"
+
+  - task: KubectlInstaller@0
+    displayName: 'Install Kubectl 1.27.3'
+    inputs: 
+      kubectlVersion: 1.27.3 
+
+  - task: HelmInstaller@1
+    displayName: 'Install Helm 3.10.0'
+    inputs:
+      helmVersionToInstall: 3.10.0
+              
+  - template: ../../templates/task.map_kv_helm.yml
+    parameters:
+      serviceConnectionName: ${{ parameters.serviceConnectionName }}
+
+  # application deploy
+  - template: ../../templates/application.yml
+    parameters:
+      serviceName: "$(applicationName)"
+      imageRepository: "$(imageRepository)/$(applicationName)"
+      imageTag: "$(resources.pipeline.build_pipeline.runName)"
+      chartPath: "$(chartPath)"
+      serviceConnectionName: ${{ parameters.serviceConnectionName }}
+      kubernetesClusterResourceGroup: "${{ parameters.kubernetesClusterResourceGroup }}"
+      kubernetesClusterName: "${{ parameters.kubernetesClusterName }}"
+      namespace: "${{ parameters.namespace }}"
+      commitHash: "$(commitHash)"
+      TempVars: "$(TempVars)"
+
+  # commit new application tag to ReleaseVersion
+  - bash: |
+      cd ReleaseVersion
+      git fetch origin
+      git reset --hard origin/main
+      git pull origin HEAD:main
+      sed -i 's/^$(applicationName)=.*/$(applicationName)=$(resources.pipeline.build_pipeline.runName)/' ${{ parameters.customer }}-${{ parameters.environment }}-${{ parameters.region }}/${{ parameters.environment }}-customer-portal.txt
+      git config --global user.email "glowfs@dev.azure.com"
+      git config --global user.name "deployment-pipeline"
+      git add "${{ parameters.customer }}-${{ parameters.environment }}-${{ parameters.region }}/${{ parameters.environment }}-customer-portal.txt"
+      git commit -m "update $(applicationName) to the new version $(resources.pipeline.build_pipeline.runName) for ${{ parameters.environment }}-${{ parameters.customer }}-${{ parameters.region }}"
+      git push origin HEAD:main
+    name: "Commit_update_to_ReleaseVersion"

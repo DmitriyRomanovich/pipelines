@@ -1,0 +1,16 @@
+parameters:
+  - name: customer
+  - name: environment
+  - name: region
+  - name: namespace
+
+steps:
+  - powershell: |
+      $Patch="./ReleaseVersion/${{ parameters.customer }}-${{ parameters.environment }}-${{ parameters.region }}/${{ parameters.namespace }}.txt"
+      $Contents = Get-Content $Patch -Raw | ConvertFrom-StringData
+      $Contents.GetEnumerator() | ForEach-Object {
+      $variableName = $_.Key + "CI"
+        $variableValue = $_.Value
+        Write-Host "##vso[task.setvariable variable=$variableName;]$variableValue"
+      }
+    displayName: 'PowerShell Script import image versions'

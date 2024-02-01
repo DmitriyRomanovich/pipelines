@@ -1,0 +1,37 @@
+parameters:
+  - name: serviceConnectionName
+  - name: kubernetesClusterResourceGroup
+  - name: kubernetesClusterName
+  - name: namespace
+  - name: commitHash
+  - name: TempVars
+  - name: chartPath
+  - name: serviceName
+
+steps:
+  - task: HelmDeploy@0
+    displayName: 'helm package ${{ parameters.serviceName }}'
+    inputs:
+      command: package
+      azureSubscription: ${{ parameters.serviceConnectionName }}
+      azureResourceGroup: ${{ parameters.kubernetesClusterResourceGroup }}
+      kubernetesCluster: ${{ parameters.kubernetesClusterName }}
+      useClusterAdmin: true
+      chartPath: '$(System.DefaultWorkingDirectory)/${{ parameters.chartPath }}/${{ parameters.serviceName }}'
+      destination: "$(System.DefaultWorkingDirectory)/Temp_Helms/${{ parameters.namespace }}"
+      arguments: "--version 1.0-${{ parameters.commitHash }}"
+
+  - task: HelmDeploy@0
+    displayName: 'helm deploy ${{ parameters.serviceName }}'
+    inputs:
+      azureSubscription: ${{ parameters.serviceConnectionName }}
+      azureResourceGroup: ${{ parameters.kubernetesClusterResourceGroup }}
+      kubernetesCluster: ${{ parameters.kubernetesClusterName }}
+      useClusterAdmin: true
+      namespace: ${{ parameters.namespace }}
+      command: upgrade
+      chartType: FilePath
+      chartPath: "$(System.DefaultWorkingDirectory)/Temp_Helms/${{ parameters.namespace }}/${{ parameters.serviceName }}-1.0-${{ parameters.commitHash }}.tgz"
+      releaseName: '${{ parameters.serviceName }}'
+      overrideValues: "${{ parameters.TempVars }},namespace=${{ parameters.namespace }}"
+      force: true

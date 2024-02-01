@@ -1,0 +1,139 @@
+stages:
+- stage: EE_UKS_DEV_deploy
+  pool: GlowDevPool
+  dependsOn: EE_UKS_preparing
+  condition: and(succeeded(), eq(stageDependencies.EE_UKS_preparing.outputs['Define_variables.passOutput.environment'], 'dev'))
+  jobs:
+  - deployment: DeployJob_EE_UKS_DEV
+    environment: 'EE_UKS_DEV_CP'
+    variables:
+      environment: $[stageDependencies.EE_UKS_preparing.Define_variables.outputs['passOutput.environment']]
+      namespace: $[stageDependencies.EE_UKS_preparing.Define_variables.outputs['passOutput.namespace']]
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - checkout: self
+          - checkout: helm
+          - checkout: release
+            persistCredentials: true
+            clean: true
+          - template: cp-ee-uks-deploy-stage.yml
+            parameters:
+              serviceConnectionName: "$(serviceConnectionName_EE_UKS)"
+              environment: "$(environment)"
+              namespace: "$(namespace)"
+
+- stage: EE_UKS_QA_deploy
+  pool: GlowDevPool
+  dependsOn: EE_UKS_preparing
+  condition: and(succeeded(), eq(stageDependencies.EE_UKS_preparing.outputs['Define_variables.passOutput.environment'], 'qa'))
+  jobs:
+  - deployment: DeployJob_EE_UKS_QA
+    environment: 'EE_UKS_QA_CP'
+    variables:
+      environment: $[stageDependencies.EE_UKS_preparing.Define_variables.outputs['passOutput.environment']]
+      namespace: $[stageDependencies.EE_UKS_preparing.Define_variables.outputs['passOutput.namespace']]
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - checkout: self
+          - checkout: helm
+          - checkout: release
+            persistCredentials: true
+            clean: true
+          - template: cp-ee-uks-deploy-stage.yml
+            parameters:
+              serviceConnectionName: "$(serviceConnectionName_EE_UKS)"
+              environment: "$(environment)"
+              namespace: "$(namespace)"
+
+- stage: placeholder_smoke_tests_EE_UKS_QA
+  pool:
+    name: GlowMainBuildAgent
+    demands:
+    - Agent.Name -equals devops-agent-main
+  dependsOn: EE_UKS_QA_deploy
+  jobs:
+  - job: Smoke_tests_EE_UKS_QA
+    variables:
+    - group: smoke-cases-ee
+    steps:
+      - checkout: autotest
+        fetchDepth: 1
+      # - template: cp-ee-uks-smoke-tests.yml
+      #   parameters:
+      #     ENVIRONMENT: "qa03"
+
+- stage: EE_UKS_INT_deploy
+  pool: GlowDevPool
+  dependsOn: placeholder_smoke_tests_EE_UKS_QA
+  jobs:
+  - deployment: DeployJob_EE_UKS_INT
+    environment: 'EE_UKS_INT_CP'
+    variables:
+      environment: 'int'
+      namespace: 'int-customer-portal'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - checkout: self
+          - checkout: helm
+          - checkout: release
+            persistCredentials: true
+            clean: true
+          - template: cp-ee-uks-deploy-stage.yml
+            parameters:
+              serviceConnectionName: "$(serviceConnectionName_EE_UKS)"
+              environment: "$(environment)"
+              namespace: "$(namespace)"
+
+- stage: EE_UKS_UAT_deploy
+  pool: GlowDevPool
+  dependsOn: placeholder_smoke_tests_EE_UKS_QA
+  jobs:
+  - deployment: DeployJob_EE_UKS_UAT
+    environment: 'EE_UKS_UAT_CP'
+    variables:
+      environment: 'uat'
+      namespace: 'uat-customer-portal'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - checkout: self
+          - checkout: helm
+          - checkout: release
+            persistCredentials: true
+            clean: true
+          - template: cp-ee-uks-deploy-stage.yml
+            parameters:
+              serviceConnectionName: "$(serviceConnectionName_EE_UKS)"
+              environment: "$(environment)"
+              namespace: "$(namespace)"
+
+- stage: EE_UKS_STG_deploy
+  pool: GlowDevPool
+  dependsOn: placeholder_smoke_tests_EE_UKS_QA
+  jobs:
+  - deployment: DeployJob_EE_UKS_STG
+    environment: 'EE_UKS_STG_CP'
+    variables:
+      environment: 'stg'
+      namespace: 'stg-customer-portal'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - checkout: self
+          - checkout: helm
+          - checkout: release
+            persistCredentials: true
+            clean: true
+          - template: cp-ee-uks-deploy-stage.yml
+            parameters:
+              serviceConnectionName: "$(serviceConnectionName_EE_UKS)"
+              environment: "$(environment)"
+              namespace: "$(namespace)"

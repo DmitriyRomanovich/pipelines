@@ -1,0 +1,91 @@
+trigger: none
+
+resources:
+  repositories:
+  - repository: release
+    type: git
+    name: Samsung/ReleaseVersion
+    trigger: none
+    ref: refs/heads/main
+  - repository: helm
+    type: git
+    name: Samsung/helms
+    trigger: none
+    ref: refs/heads/main
+
+variables:
+  customer: 'smsng'
+  environment: 'stg'
+  region: 'aue'
+  namespace: 'stg-common'
+  serviceConnectionName: 'Azure subscription 1(65de260e-4df4-4b57-9aa6-726e772d3246)'
+  kubernetesClusterResourceGroup: "rg-dev-aue-smsng"
+  kubernetesClusterName: "dev-aue-smsng"
+  chartPath: "helms/helms/common"
+
+
+
+pool:
+  name: GlowDevPool
+
+stages:  
+- stage: Deploy_release
+  jobs:  
+  - job: Deploy 
+    steps:
+    - checkout: self
+    - checkout: release
+    - checkout: helm
+
+    - task: AzureKeyVault@2
+      displayName: 'Export Azure Key Vault secrets from kv-$(environment)-$(region)-$(customer)'
+      inputs:
+        azureSubscription: $(serviceConnectionName)
+        KeyVaultName: kv-$(environment)-$(region)-$(customer)
+        RunAsPreJob: true
+
+    - task: AzureCLI@2
+      displayName: 'Set commitHash'
+      inputs:
+        azureSubscription: $(serviceConnectionName)
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          cd helms
+          commitHash=$(git rev-parse --short HEAD)
+          echo "##vso[task.setvariable variable=commitHash]$commitHash"
+          echo "$commitHash"
+
+    - task: KubectlInstaller@0
+      displayName: 'Install Kubectl 1.27.3'
+      inputs: 
+        kubectlVersion: 1.27.3 
+
+    - task: HelmInstaller@1
+      displayName: 'Install Helm 3.10.0'
+      inputs:
+        helmVersionToInstall: 3.10.0
+        
+    # - template: templates/ps.set_images.yml
+    #   parameters:
+    #     customer: "$(customer)"
+    #     environment: "$(environment)"
+    #     region: "$(region)"
+    #     namespace: "$(namespace)"
+
+    - template: templates/task.map_kv_helm.yml
+      parameters:
+        serviceConnectionName: "$(serviceConnectionName)"
+
+    # strapi
+    - template: templates/application.public.yml
+      parameters:
+        serviceName: "strapi"
+        chartPath: "$(chartPath)"
+        serviceConnectionName: "$(serviceConnectionName)"
+        kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+        kubernetesClusterName: "$(kubernetesClusterName)"
+        namespace: "$(namespace)"
+        commitHash: "$(commitHash)"
+        TempVars: "$(TempVars)"
+

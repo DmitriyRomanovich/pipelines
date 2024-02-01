@@ -1,0 +1,101 @@
+trigger:
+- none
+
+pool:
+  name: GlowDevPool
+
+resources:
+  pipelines:
+  - pipeline: build_pipeline # Name of the pipeline resource.
+    source: build-cp-loans # The name of the pipeline referenced by this pipeline resource.
+    project: Samsung # Required only if the source pipeline is in another project
+    trigger: 
+      branches:
+        include:
+        - main
+  repositories:
+  - repository: helm
+    type: git
+    name: Samsung/helms
+    trigger: none
+    ref: refs/heads/main
+  - repository: release
+    type: git
+    name: Samsung/ReleaseVersion
+    trigger: none
+    ref: refs/heads/main
+  - repository: autotest
+    type: git
+    name: Samsung/cp_autotest
+    trigger: none
+    ref: refs/heads/master
+
+variables:
+- group: projectBuild
+- name: chartPath
+  value: "helms/helms/customer-portal"
+- name: applicationName
+  value: cp-loans
+# - name: serviceConnectionName_EE_UKS
+#   value: 'glow-busby-subs'
+- name: serviceConnectionName_SMSNG_UKS
+  value: 'Azure subscription 1(65de260e-4df4-4b57-9aa6-726e772d3246)'
+- name: serviceConnectionName_SMSNG_AUE
+  value: 'Azure subscription 1(65de260e-4df4-4b57-9aa6-726e772d3246)'
+
+name: deploy-cp-loans-$(date:yyyyMMdd)-buildID-$(Build.BuildId)
+
+
+stages:
+- stage: Deployment_information
+  pool: server
+  dependsOn:
+  jobs:
+  - job: Show_information_about_deploy
+    variables:
+      source_branch: $[ variables[format('{0}{1}{2}{3}', 'BUILD-SOURCE-BRANCH-', variables['applicationName'], '-', variables['resources.pipeline.build_pipeline.runName'])] ]
+    steps:
+    - task: ManualValidation@0
+      timeoutInMinutes: 1 # task times out
+      inputs:
+          notifyUsers:
+          instructions: |
+            Image to deploy: $(applicationName):$(resources.pipeline.build_pipeline.runName).
+            Code source branch: $(source_branch).
+          onTimeout: 'resume'
+
+# - stage: EE_UKS_preparing
+#   pool: GlowDevPool
+#   dependsOn:
+#   jobs:
+#   - job: Define_variables
+#     variables:
+#       source_branch: $[ variables[format('{0}{1}{2}{3}', 'BUILD-SOURCE-BRANCH-', variables['applicationName'], '-', variables['resources.pipeline.build_pipeline.runName'])] ]
+#     steps:
+#     - template: templates/cp-branching-strategy-standard.yml
+# - template: templates/cp-ee-uks-stages.yml
+
+- stage: SMSNG_AUE_preparing
+  pool: GlowDevPool
+  dependsOn:
+  jobs:
+  - job: Define_variables
+    variables:
+      source_branch: $[ variables[format('{0}{1}{2}{3}', 'BUILD-SOURCE-BRANCH-', variables['applicationName'], '-', variables['resources.pipeline.build_pipeline.runName'])] ]
+    steps:
+    - template: templates/cp-branching-strategy-standard.yml
+- template: templates/cp-smsng-aue-stages.yml
+
+- stage: SMSNG_UKS_preparing
+  pool:
+    name: GlowMainBuildAgent
+    demands:
+      - agent.name -equals InsuranceAgent
+  dependsOn:
+  jobs:
+  - job: Define_variables
+    variables:
+      source_branch: $[ variables[format('{0}{1}{2}{3}', 'BUILD-SOURCE-BRANCH-', variables['applicationName'], '-', variables['resources.pipeline.build_pipeline.runName'])] ]
+    steps:
+    - template: templates/cp-branching-strategy-old-standard.yml
+- template: templates/cp-smsng-uks-stages.yml

@@ -1,0 +1,972 @@
+trigger:
+- none
+
+pool:
+  name: GlowDevPool
+
+resources:
+  repositories:
+  - repository: tf
+    name: Samsung/cp-azure-b2c
+    type: git
+    trigger: none
+    ref: refs/heads/main
+  - repository: b2c_policies
+    name: Samsung/cp-azure-b2c
+    type: git
+    trigger: none
+    ref: refs/heads/main
+  - repository: b2c_login_templates
+    name: Samsung/cp-azure-b2c
+    type: git
+    trigger: none
+    ref: refs/heads/main
+
+variables:
+# Environment variables
+- name: subscriptionId
+  value: "3e666fda-71e2-4986-a467-29053c2daea3" # glow-ee-subs
+- name: customer
+  value: "busby"
+- name: environment
+  value: "stg"
+- name: region
+  value: "uks" # uks | aue
+- name: mainDomain
+  value: "stg03.glowfinsvs.com"
+- name: serviceConnectionName
+  value: "glow-busby-subs"
+- name: tfCustomerName
+  value: "busby" # smsng | busby | agoraglw
+
+# B2C specific variables
+- name: b2cLocation
+  value: "Europe"
+- name: b2cCountryCode
+  value: "GB"
+- name: b2cTierName
+  value: "PremiumP1"
+- name: cpB2CPoliciesDeveloperMode
+  value: "true"
+
+# bootstrap Azure B2C application specific variables
+- name: bootstrapAppDisplayName
+  value: "bootstrap"
+- name: bootstrapAppSecretExpMonth
+  value: 12
+
+# Azure DevOps variables
+- group: projectBuild
+- name: tenant
+  value: "c5360f6f-0bb5-46b9-a278-75619bfd2434"
+- name: organization
+  value: "glowfs"
+- name: project
+  value: "Samsung"
+- name: variableGroupID
+  value: "21" # projectBuild
+
+# Combined variables
+- name: resourceGroupName
+  value: "rg-$(environment)-$(region)-$(customer)-cp"
+- name: b2cTenantName
+  value: "b2c$(environment)$(region)$(customer)cp"
+- name: b2cResourceName
+  value: "$(b2cTenantName).onmicrosoft.com"
+- name: b2cTenantDisplayName
+  value: "b2c-$(environment)-$(region)-$(customer)-cp"
+- name: kvName
+  value: "kv-$(environment)-$(region)-$(customer)"
+- name: stLoginTemplatesName
+  value: "st$(environment)$(region)$(customer)logintmpl"
+- name: stLoginTemplatesAllowedOrigins
+  value: '["https://$(b2cTenantName).b2clogin.com", "http://localhost:3000"]'
+- name: logAnalyticsWorkspaceName
+  value: "log-$(environment)-$(region)-$(customer)-b2c"
+- name: applicationInsightsName
+  value: "appi-$(environment)-$(region)-$(customer)-b2c"
+- name: cpDomainURL
+  value: "https://cportal.$(mainDomain)/" # with / at the end
+- name: cpImpersonationURL
+  value: "https://impersonation.$(mainDomain)" # without / at the end
+- name: loginTemplate
+  value: "$(customer)"
+
+# Terraform specific variables
+- name: tfKeyVaultName
+  value: "kv-terraform-$(tfCustomerName)" # kv-terraform-glow | kv-terraform-smsng | kv-terraform-busby | kv-terraform-agoraglw
+- name: tfversion
+  value: '1.5.6'
+- name: key_vault_id
+  value: "/subscriptions/$(subscriptionId)/resourceGroups/rg-mgmt-services/providers/Microsoft.KeyVault/vaults/$(kvName)"
+
+parameters:
+  - name: terraformLevel0Action
+    displayName: "Terraform action for level0:"
+    default: apply
+    values:
+      - apply
+      - destroy
+  - name: terraformLevel1Action
+    displayName: "Terraform action for level1:" 
+    default: apply
+    values:
+      - apply
+      - destroy
+  - name: terraformLevel2Action
+    displayName: "Terraform action for level2:" 
+    default: apply
+    values:
+      - apply
+      - destroy
+  - name: terraformLevel3Action
+    displayName: "Terraform action for level3:"
+    default: apply
+    values:
+      - apply
+      - destroy
+
+name: create-b2c-STG-uks-busby-$(date:yyyyMMdd)-buildID-$(Build.BuildId)
+
+stages:
+- stage: Create_CP_infra_lvl0
+  dependsOn:
+  jobs:
+  - job: Terraform_plan_lvl0
+    steps:
+    - checkout: tf
+    - task: ms-devlabs.custom-terraform-tasks.custom-terraform-installer-task.TerraformInstaller@1
+      displayName: 'Install Terraform $(tfversion)'
+      inputs:
+        terraformVersion: $(tfversion)
+
+    - task: AzureKeyVault@2
+      displayName: 'Export Azure Key Vault secrets from kv-terraform-$(tfCustomerName)'
+      inputs:
+        azureSubscription: $(serviceConnectionName)
+        KeyVaultName: $(tfKeyVaultName)
+        RunAsPreJob: true
+
+    - bash: |
+        if [ "$(region)" = "uks" ]; then
+          echo "##vso[task.setvariable variable=tfRegion]uksouth"
+        elif [ "$(region)" = "aue" ]; then
+          echo "##vso[task.setvariable variable=tfRegion]australiaeast"
+        fi
+      name: Map_location_vars
+
+    - bash: |
+        cd tf/level0
+        export ARM_TENANT_ID="$(tenant)"
+        export ARM_CLIENT_ID="$(sp-terraform-owner-id)"
+        export ARM_CLIENT_SECRET="$(sp-terraform-owner-secret)"
+        export ARM_SUBSCRIPTION_ID="$(subscriptionId)"
+        az login --service-principal --username $ARM_CLIENT_ID --password $ARM_CLIENT_SECRET --tenant $ARM_TENANT_ID --allow-no-subscriptions
+        az account set -s $ARM_SUBSCRIPTION_ID
+        export ARM_ACCESS_KEY=$(az storage account keys list --account-name satfstate$(tfCustomerName) -o tsv --query "[0].value")
+        terraform init -backend-config="storage_account_name=satfstate$(tfCustomerName)" -backend-config="key=$(b2cTenantDisplayName)-level0"
+        echo 'location = "$(tfRegion)"' > vars_lvl0.tfvars
+        echo 'rg_name = "$(resourceGroupName)"' >> vars_lvl0.tfvars
+        echo 'st_login_templates_name = "$(stLoginTemplatesName)"' >> vars_lvl0.tfvars
+        echo 'st_login_templates_allowed_origins = $(stLoginTemplatesAllowedOrigins)' >> vars_lvl0.tfvars
+        echo 'key_vault_id = "$(key_vault_id)"' >> vars_lvl0.tfvars
+        echo 'log_analytics_workspace_name = "$(logAnalyticsWorkspaceName)"' >> vars_lvl0.tfvars
+        echo 'application_insights_name = "$(applicationInsightsName)"' >> vars_lvl0.tfvars
+        cat vars_lvl0.tfvars
+        if [[ ${{ parameters.terraformLevel0Action }} == "destroy" ]]; then
+          terraform plan -var-file="vars_lvl0.tfvars" -destroy
+        else
+          terraform plan -var-file="vars_lvl0.tfvars"
+        fi
+      name: Terraform_plan
+
+  - job: waitForTFPlanLvl0
+    dependsOn:
+    - Terraform_plan_lvl0
+    displayName: Wait for external validation
+    pool: server
+    timeoutInMinutes: 10 # job times out
+    steps:
+    - task: ManualValidation@0
+      timeoutInMinutes: 10 # task times out
+      inputs:
+          notifyUsers: |
+          instructions: |
+            Please check the Terraform plan of level0 before deployment, if the changes are correct, confirm.
+          onTimeout: 'reject'
+
+  - job: Terraform_apply_lvl0
+    dependsOn:
+    - waitForTFPlanLvl0
+    steps:
+    - checkout: tf
+
+    - task: ms-devlabs.custom-terraform-tasks.custom-terraform-installer-task.TerraformInstaller@1
+      displayName: 'Install Terraform $(tfversion)'
+      inputs:
+        terraformVersion: $(tfversion)
+
+    - task: AzureKeyVault@2
+      displayName: 'Export Azure Key Vault secrets from kv-terraform-$(tfCustomerName)'
+      inputs:
+        azureSubscription: $(serviceConnectionName)
+        KeyVaultName: $(tfKeyVaultName)
+        RunAsPreJob: true
+        SecretsFilter: 'sp-terraform-owner-id, sp-terraform-owner-secret'
+
+    - bash: |
+        if [ "$(region)" = "uks" ]; then
+          echo "##vso[task.setvariable variable=tfRegion]uksouth"
+        elif [ "$(region)" = "aue" ]; then
+          echo "##vso[task.setvariable variable=tfRegion]australiaeast"
+        fi
+      name: Map_location_vars
+
+    - bash: |
+        cd tf/level0
+        export ARM_TENANT_ID="$(tenant)"
+        export ARM_CLIENT_ID="$(sp-terraform-owner-id)"
+        export ARM_CLIENT_SECRET="$(sp-terraform-owner-secret)"
+        export ARM_SUBSCRIPTION_ID="$(subscriptionId)"
+        az login --service-principal --username $ARM_CLIENT_ID --password $ARM_CLIENT_SECRET --tenant $ARM_TENANT_ID --allow-no-subscriptions
+        az account set -s $ARM_SUBSCRIPTION_ID
+        export ARM_ACCESS_KEY=$(az storage account keys list --account-name satfstate$(tfCustomerName) -o tsv --query "[0].value")
+        terraform init -backend-config="storage_account_name=satfstate$(tfCustomerName)" -backend-config="key=$(b2cTenantDisplayName)-level0"
+        echo 'location = "$(tfRegion)"' > vars_lvl0.tfvars
+        echo 'rg_name = "$(resourceGroupName)"' >> vars_lvl0.tfvars
+        echo 'st_login_templates_name = "$(stLoginTemplatesName)"' >> vars_lvl0.tfvars
+        echo 'st_login_templates_allowed_origins = $(stLoginTemplatesAllowedOrigins)' >> vars_lvl0.tfvars
+        echo 'key_vault_id = "$(key_vault_id)"' >> vars_lvl0.tfvars
+        echo 'log_analytics_workspace_name = "$(logAnalyticsWorkspaceName)"' >> vars_lvl0.tfvars
+        echo 'application_insights_name = "$(applicationInsightsName)"' >> vars_lvl0.tfvars
+        cat vars_lvl0.tfvars
+        terraform ${{ parameters.terraformLevel0Action }} -var-file="vars_lvl0.tfvars" -auto-approve
+      name: Terraform_apply
+
+- stage: Create_Azure_B2C_Tenant
+#  dependsOn:
+  jobs:
+  - job: waitForAccessTokenValidation
+    displayName: Wait for external validation
+    pool: server
+    timeoutInMinutes: 10 # job times out
+    steps:
+    - task: ManualValidation@0
+      timeoutInMinutes: 10 # task times out
+      inputs:
+          notifyUsers: |
+          instructions: |
+            Have you already received the ResourceManager and KeyVault tokens?
+            Please execute the given PS script to get new ones (the tokens lifetime is near 60 minutes).
+            Key Vault "kv-$(environment)-$(region)-$(customer)" must be deployed before proceeding in subscription $(subscriptionId)!
+
+            ###
+            Connect-AzAccount -Tenant $(tenant) -UseDeviceAuthentication
+            $twoDimensionalArray = @(
+              @("accessTokenResourceManagerPart1", $((Get-AzAccessToken -ResourceTypeName ResourceManager).Token).Substring(0, 1000)),
+              @("accessTokenResourceManagerPart2", $((Get-AzAccessToken -ResourceTypeName ResourceManager).Token).Substring(1000)),
+              @("accessTokenKeyVault", $(Get-AzAccessToken -ResourceTypeName KeyVault).Token),
+              @("accessTokenMSGraphMainTenant", $(Get-AzAccessToken -ResourceTypeName MSGraph).Token)
+            )
+            az login --tenant $(tenant)
+            foreach ($row in $twoDimensionalArray) {
+              az pipelines variable-group variable create --group-id $(variableGroupID) --name $row[0] --value $row[1] --organization "https://dev.azure.com/$(organization)" --project "$(project)" --secret true
+              az pipelines variable-group variable update --group-id $(variableGroupID) --name $row[0] --value $row[1] --organization "https://dev.azure.com/$(organization)" --project "$(project)" --secret true
+            }            
+            ###
+          onTimeout: 'reject'
+
+  - job: Create_B2C_Tenant
+    dependsOn:
+    - waitForAccessTokenValidation
+    steps:
+    - pwsh: |
+        $accessTokenResourceManager = "$(accessTokenResourceManagerPart1)"+"$(accessTokenResourceManagerPart2)"
+        $URI = "https://management.azure.com/subscriptions/$(subscriptionId)/resourceGroups/$(resourceGroupName)/providers/Microsoft.AzureActiveDirectory/b2cDirectories/$(b2cResourceName)?api-version=2023-01-18-preview"
+        $respond = $(curl -i -X PUT -H "Authorization: Bearer $accessTokenResourceManager" -H "Content-Type: application/json" ${URI} -d "{'location': '$(b2cLocation)', 'sku': { 'name': '$(b2cTierName)', 'tier': 'A0'}, 'properties': {'createTenantProperties': {'displayName': '$(b2cTenantDisplayName)', 'countryCode': '$(b2cCountryCode)', 'isGoLocalTenant': true}}}")
+        Write-Host $respond
+        $lines = $respond -split "\n"
+        $location = $lines | Where-Object { $_ -match '^Location:' } | ForEach-Object { $_ -replace '^Location:\s+' }
+        Write-Host $location
+        Write-Host "##vso[task.setvariable variable=location]${location}"
+      name: Create_B2C_Tenant
+
+    - pwsh: |
+        Start-Sleep -Seconds 5
+        $accessTokenResourceManager = "$(accessTokenResourceManagerPart1)"+"$(accessTokenResourceManagerPart2)"
+        $respond = $(curl -i -X GET -H "Authorization: Bearer $accessTokenResourceManager" -H "Content-Type: application/json" "$(location)")
+        $attemptCount = 0 
+        while (-not ($failed -or $attemptCount -eq 50)) {
+          if ($respond -like '*already exists in the system*') {
+            Write-Host $respond
+            Write-Host "B2C Tenant with the same name already exists."
+            $failed = $true
+          }
+          elseif ($respond -like '*"status":"Failed"*' -or $respond -like '*"error":*') {
+            Write-Host $respond
+            throw "Some error when creating a B2C tenant."
+          }
+          elseif ($respond -like '*"createdBy":*') {
+            Write-Host $respond
+            "B2C tenant has been created successfully"
+            $failed = $true
+          }
+          else {
+            $respond = $(curl -i -X GET -H "Authorization: Bearer $accessTokenResourceManager" -H "Content-Type: application/json" "$(location)")
+            Start-Sleep -Seconds 5
+            Write-Host "next attempt..."
+            $attemptCount++
+          }
+        }
+      name: Get_B2C_creation_status
+
+- stage: Grant_AD_role_and_store_B2C_info
+  # dependsOn:
+  jobs:
+  - job: Store_B2C_info_to_KV
+    steps:
+    - pwsh: |
+        # Get information about B2C tenant
+        $accessTokenResourceManager = "$(accessTokenResourceManagerPart1)"+"$(accessTokenResourceManagerPart2)"
+        $URI = "https://management.azure.com/subscriptions/$(subscriptionId)/resourceGroups/$(resourceGroupName)/providers/Microsoft.AzureActiveDirectory/b2cDirectories/$(b2cResourceName)?api-version=2023-01-18-preview"
+        $respond = $(curl -X GET -H "Authorization: Bearer $accessTokenResourceManager" -H "Content-Type: application/json" ${URI})
+        # Write-Host $respond
+        $pattern = '"tenantId":"([^"]+)"'
+        $match = [regex]::Match($respond, $pattern)
+        if ($match.Success) {
+          $tenantId = $match.Groups[1].Value
+        } else {
+          Write-Host $respond
+          throw "TenantId not found in server respond or access token has been expired."
+        }
+        # Store B2C Tenant ID to KV
+        $URI = "https://$(kvName).vault.azure.net//secrets/azureADB2COptionsTenantId?api-version=7.4"
+        $JSON = "{'value': '${tenantId}'}"
+        curl -X PUT -H "Authorization: Bearer $(accessTokenKeyVault)" -H "Content-Type: application/json" ${URI} -d "$JSON"
+        # Store B2C Tenant name to KV
+        $URI = "https://$(kvName).vault.azure.net//secrets/azureADB2COptionsTenantName?api-version=7.4"
+        $JSON = "{'value': '$(b2cTenantName)'}"
+        curl -X PUT -H "Authorization: Bearer $(accessTokenKeyVault)" -H "Content-Type: application/json" ${URI} -d "$JSON"
+      name: Save_B2C_Tenant_info_to_KV
+
+    - task: AzureKeyVault@2
+      displayName: 'Export Azure Key Vault secrets from kv-terraform-$(tfCustomerName)'
+      inputs:
+        azureSubscription: $(serviceConnectionName)
+        KeyVaultName: $(tfKeyVaultName)
+        RunAsPreJob: true
+        SecretsFilter: 'sp-terraform-owner-id'
+
+    - pwsh: |
+        # Assign Cloud Application Administrator AD role to terraform SP in main tenant.
+        # Get Terraform SP Object ID
+        $URI = 'https://graph.microsoft.com/v1.0/servicePrincipals/appId=$(sp-terraform-owner-id)?$select=id'
+        $respond = $(curl -X GET -H "Authorization: Bearer $(accessTokenMSGraphMainTenant)" -H "Content-Type: application/json" ${URI})
+        Write-Host $respond
+        $object = ConvertFrom-Json $respond
+        $msGraphObjectID = $object.id
+        Write-Host $msGraphObjectID
+        # Assign AD role:
+        $URI = "https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments"
+        $JSON = "{'@odata.type': '#microsoft.graph.unifiedRoleAssignment', 'principalId': '${msGraphObjectID}', 'roleDefinitionId': '158c047a-c907-4556-b7ef-446551a6b5f7', 'directoryScopeId': '/'}" ### SP Object ID here
+        $respond = $(curl -X POST -H "Authorization: Bearer $(accessTokenMSGraphMainTenant)" -H "Content-Type: application/json" ${URI} -d "$JSON")
+        Write-Host $respond
+        if ($respond -like '*A conflicting object with one or more of the specified property values is present in the directory*') {
+          Write-Host "The desired role is already assigned to SP."
+        }
+        elseif ($respond -like '*"status":"Failed"*' -or $respond -like '*"error":*') {
+          throw "Some error when assihning AD role to SP in main tenant."
+        }
+        else {
+          Write-Host "The desired role has been assigned to SP."
+        }
+      name: Assign_AD_role_to_Terraform_SP
+
+- stage: Create_bootstrap_B2C_Application
+  # dependsOn:
+  jobs:
+  - job: Get_B2C_Tenand_ID
+    steps:
+    - pwsh: |
+        $URI = "https://$(kvName).vault.azure.net/secrets/azureADB2COptionsTenantId/?api-version=7.4"
+        $respond = $(curl -X GET -H "Authorization: Bearer $(accessTokenKeyVault)" -H "Content-Type: application/json" ${URI})
+        $pattern = '"value":"([^"]+)"'
+        $match = [regex]::Match($respond, $pattern)
+        if ($match.Success) {
+          $b2cTenantId = $match.Groups[1].Value
+        } else {
+          Write-Host $respond
+          throw "Value not found in server respond or token is not valid."
+        }
+        Write-Host $b2cTenantId
+        Write-Host "##vso[task.setvariable variable=b2cTenantId;isoutput=true]$b2cTenantId"
+      name: Get_B2C_Tenand_ID
+
+  - job: waitForMSGraphTokenValidation
+    dependsOn:
+    - Get_B2C_Tenand_ID
+    displayName: Wait for external validation
+    pool: server
+    variables:
+      b2cTenantId: $[dependencies.Get_B2C_Tenand_ID.outputs['Get_B2C_Tenand_ID.b2cTenantId']]
+    timeoutInMinutes: 10 # job times out
+    steps:
+    - task: ManualValidation@0
+      timeoutInMinutes: 10 # task times out
+      inputs:
+          notifyUsers: |
+          instructions: |
+            Have you already received the MSGraph token for B2C Tenant with ID: $(b2cTenantId)?
+            Please execute the given PS script to get a new one (the token lifetime is near 60 minutes).
+            
+            ###
+            Connect-AzAccount -Tenant $(b2cTenantId) -UseDeviceAuthentication
+            az login --tenant $(tenant)
+            $accessTokenMSGraph = $(Get-AzAccessToken -ResourceTypeName MSGraph).Token
+            az pipelines variable-group variable create --group-id $(variableGroupID) --name "accessTokenMSGraph-b2c-$(environment)-$(region)-$(customer)" --value "${accessTokenMSGraph}" --organization "https://dev.azure.com/$(organization)" --project "$(project)" --secret true
+            az pipelines variable-group variable update --group-id $(variableGroupID) --name "accessTokenMSGraph-b2c-$(environment)-$(region)-$(customer)" --value "${accessTokenMSGraph}" --organization "https://dev.azure.com/$(organization)" --project "$(project)" --secret true
+            ###
+          onTimeout: 'reject'
+
+  - job: Create_B2C_App
+    dependsOn:
+    - waitForMSGraphTokenValidation
+    variables:
+      accessTokenMSGraph: $[ variables[format('{0}{1}{2}{3}{4}{5}', 'accessTokenMSGraph-b2c-', variables['environment'], '-', variables['region'], '-', variables['customer'])] ]
+    steps:
+    - pwsh: |
+        # 5.1 Create new application if not exists
+        $bootstrapAppDisplayName = "$(bootstrapAppDisplayName)"
+        $URI = "https://graph.microsoft.com/v1.0/applications"
+        # Write-Host $URI
+        $respond = $(curl -X GET -H "Authorization: Bearer $(accessTokenMSGraph)" -H "Content-Type: application/json" ${URI})
+        Write-Host $respond
+        if ($respond -like '*"status":"Failed"*' -or $respond -like '*"error":*') {
+            Write-Host $respond
+            throw "Some error when creating Application in B2C."
+          }
+        $pattern = '"displayName":"$(bootstrapAppDisplayName)","([^"]+)"'
+        $match = [regex]::Match($respond, $pattern)
+        if ($match.Success) {
+          $jsonObject = ConvertFrom-Json $respond
+          $desiredElement = $jsonObject.value | Where-Object { $_.displayName -eq "$(bootstrapAppDisplayName)" }
+          $appId = $desiredElement.appId
+          $elements = $appId -split " "
+          $bootstrapAppID = $elements[0]
+          $appObjId = $desiredElement.id
+          $elements = $appObjId -split " "
+          $bootstrapAppObjID = $elements[0]
+          Write-Host "bootstrap application with applicationID: ${bootstrapAppID} already exists in B2C"
+        }
+        else {
+          $URI = "https://graph.microsoft.com/v1.0/applications"
+          $JSON = "{'displayName': '$(bootstrapAppDisplayName)'}"
+          $respond = $(curl -X POST -H "Authorization: Bearer $(accessTokenMSGraph)" -H "Content-Type: application/json" ${URI} -d "$JSON")
+          # Write-Host $respond
+          $object = ConvertFrom-Json $respond
+          $bootstrapAppID = $object.appId
+          $bootstrapAppObjID = $object.id
+          Write-Host "bootstrap application with applicationID: ${bootstrapAppID} has been created in B2C"
+        }
+        Write-Host "##vso[task.setvariable variable=bootstrapAppObjID]${bootstrapAppObjID}"
+        Write-Host "##vso[task.setvariable variable=bootstrapAppID]${bootstrapAppID}"
+      name: Create_B2C_App
+
+    - pwsh: |
+        # 5.2 Create new SP if not exists
+        $URI = "https://graph.microsoft.com/v1.0/servicePrincipals"
+        $respond = $(curl -X GET -H "Authorization: Bearer $(accessTokenMSGraph)" -H "Content-Type: application/json" ${URI})
+        Write-Host $respond
+        if ($respond -like '*"status":"Failed"*' -or $respond -like '*"error":*') {
+          Write-Host $respond
+          throw "Some error when getting information of SP in B2C."
+        }
+        $jsonObject = ConvertFrom-Json $respond
+        $pattern = '"appId":"$(bootstrapAppID)","([^"]+)"'
+        $match = [regex]::Match($respond, $pattern)
+        if ($match.Success) {
+          $desiredElement = $jsonObject.value | Where-Object { $_.appId -eq "$(bootstrapAppID)" }
+          $bootstrapSPObjId = $desiredElement.id
+          Write-Host "bootstrap SP with applicationID: $(bootstrapAppID) already exists in B2C"
+        }
+        else {
+          $URI = "https://graph.microsoft.com/v1.0/servicePrincipals"
+          $JSON = "{'appId': '$(bootstrapAppID)'}"
+          $respond = $(curl -X POST -H "Authorization: Bearer $(accessTokenMSGraph)" -H "Content-Type: application/json" ${URI} -d "$JSON")
+          if ($respond -like '*"status":"Failed"*' -or $respond -like '*"error":*') {
+            Write-Host $respond
+            throw "Some error when creating SP in B2C."
+          }
+          Write-Host $respond
+          $jsonObject = ConvertFrom-Json $respond
+          $bootstrapSPObjId = $jsonObject.id
+          Write-Host "bootstrap SP with applicationID: $(bootstrapAppID) has been created in B2C"
+        }
+        Write-Host $bootstrapSPObjId
+        Write-Host "##vso[task.setvariable variable=bootstrapSPObjId]${bootstrapSPObjId}"
+      name: Create_B2C_SP
+
+    - pwsh: |
+        # 5.3.1 Assign Global Admin AD role to bootstrap SP in B2C (can be used MS Graph role in case of use non-TF method for creation of apps)
+        $URI = "https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments"
+        $JSON = "{'@odata.type': '#microsoft.graph.unifiedRoleAssignment', 'principalId': '$(bootstrapSPObjId)', 'roleDefinitionId': '62e90394-69f5-4237-9190-012177145e10', 'directoryScopeId': '/'}" ### SP Object ID here
+        $respond = $(curl -X POST -H "Authorization: Bearer $(accessTokenMSGraph)" -H "Content-Type: application/json" ${URI} -d "$JSON")
+        Write-Host $respond
+        if ($respond -like '*A conflicting object with one or more of the specified property values is present in the directory*') {
+          Write-Host "The desired role is already assigned to SP."
+        }
+        elseif ($respond -like '*"status":"Failed"*' -or $respond -like '*"error":*') {
+          throw "Some error when assihning AD role to SP in B2C."
+        }
+        else {
+          Write-Host "The desired role has been assigned to SP."
+        }
+      name: Assign_AD_role_to_B2C_App
+
+    - pwsh: |
+        # 5.3.2 Grant MSGraph TrustFrameworkKeySet.ReadWrite.All and Policy.ReadWrite.TrustFramework API permision to bootstrap App in B2C
+        # Get MSGraph bootstrap SP Object ID
+        $URI = 'https://graph.microsoft.com/v1.0/servicePrincipals/appId=00000003-0000-0000-c000-000000000000?$select=id'
+        $respond = $(curl -X GET -H "Authorization: Bearer $(accessTokenMSGraph)" -H "Content-Type: application/json" ${URI})
+        Write-Host $respond
+        $object = ConvertFrom-Json $respond
+        $msGraphObjectID = $object.id
+        Write-Host $msGraphObjectID
+        # Grant API permissions to bootstrap application
+        $URI = "https://graph.microsoft.com/v1.0/applications/$(bootstrapAppObjID)"
+        $JSON = "{'requiredResourceAccess': [{'resourceAccess':[{'id':'4a771c9a-1cf2-4609-b88e-3d3e02d539cd','type':'Role'}, {'id':'79a677f7-b79d-40d0-a36a-3e6f8688dd7a','type':'Role'}],'resourceAppId':'00000003-0000-0000-c000-000000000000'}]}" # 4a771c9a-1cf2-4609-b88e-3d3e02d539cd is TrustFrameworkKeySet.ReadWrite.All MSGraph Application API and 79a677f7-b79d-40d0-a36a-3e6f8688dd7a is Policy.ReadWrite.TrustFramework
+        $respond = $(curl -X PATCH -H "Authorization: Bearer $(accessTokenMSGraph)" -H "Content-Type: application/json" ${URI} -d "$JSON")
+        Write-Host $respond
+        # Grant admin concent for API permission to bootstrap application
+        $JSON = "{'principalId': '$(bootstrapSPObjId)', 'resourceId': '${msGraphObjectID}', 'appRoleId': '4a771c9a-1cf2-4609-b88e-3d3e02d539cd'}"
+        $URI = "https://graph.microsoft.com/beta/servicePrincipals/$(bootstrapSPObjId)/appRoleAssignments"
+        $respond = $(curl -X POST -H "Authorization: Bearer $(accessTokenMSGraph)" -H "Content-Type: application/json" ${URI} -d "$JSON")
+        Write-Host $respond
+        $JSON = "{'principalId': '$(bootstrapSPObjId)', 'resourceId': '${msGraphObjectID}', 'appRoleId': '79a677f7-b79d-40d0-a36a-3e6f8688dd7a'}"
+        $URI = "https://graph.microsoft.com/beta/servicePrincipals/$(bootstrapSPObjId)/appRoleAssignments"
+        $respond = $(curl -X POST -H "Authorization: Bearer $(accessTokenMSGraph)" -H "Content-Type: application/json" ${URI} -d "$JSON")
+        Write-Host $respond
+      name: Assign_API_permissions_to_B2C_App
+
+    - pwsh: |
+        # 5.4 Create secret for bootstrap SP in B2C
+        # check if the total number of secrets is 2, delete one
+        $URI = "https://graph.microsoft.com/v1.0/applications/$(bootstrapAppObjID)"
+        $respond = $(curl -X GET -H "Authorization: Bearer $(accessTokenMSGraph)" -H "Content-Type: application/json" ${URI})
+        Write-Host $respond
+        if ($respond -like '*"status":"Failed"*' -or $respond -like '*"error":*') {
+          throw "Some error when getting keyIds for B2C App."
+        }
+        $jsonObject = ConvertFrom-Json $respond
+        $keyIds = $jsonObject.passwordCredentials.keyId
+        if ($keyIds) {
+          $elements = $keyIds -split ' '
+          if ($elements.Count -eq 2) {
+            $URI = "https://graph.microsoft.com/v1.0/applications/$(bootstrapAppObjID)/removePassword"
+            $keyId = $keyIds[0]
+            $JSON = "{'keyId': '$keyId'}"
+            $respond = $(curl -X POST -H "Authorization: Bearer $(accessTokenMSGraph)" -H "Content-Type: application/json" ${URI} -d "$JSON")
+            Write-Host $respond
+            if ($respond -like '*"status":"Failed"*' -or $respond -like '*"error":*') {
+              throw "Some error when removing keyId for B2C App."
+            }
+          }
+        }
+        # then create new secret
+        $URI = "https://graph.microsoft.com/v1.0/applications/$(bootstrapAppObjID)/addPassword" ### App Object ID here
+        $currentDate = Get-Date
+        $newDate = $currentDate.AddMonths($(bootstrapAppSecretExpMonth))
+        $formattedDate = $newDate.ToString("yyyy-MM-ddTHH:mm:ssZ")
+        $JSON = "{'passwordCredential': {'displayName': 'set-by-pipeline', 'endDateTime': '${formattedDate}'}}"
+        $respond =$(curl -X POST -H "Authorization: Bearer $(accessTokenMSGraph)" -H "Content-Type: application/json" ${URI} -d "$JSON")
+        if ($respond -like '*"status":"Failed"*' -or $respond -like '*"error":*') {
+          Write-Host $respond
+          throw "Some error when creating new secret for B2C App."
+        }
+        $jsonObject = ConvertFrom-Json $respond
+        $bootstrapAppSecret = $jsonObject.secretText
+        Write-Host "##vso[task.setvariable variable=bootstrapAppSecret]${bootstrapAppSecret}"
+      name: Create_B2C_App_secret
+
+    - pwsh: |
+        # 5.5 Store SP secret as KV secret in main tenant
+        $URI = "https://$(kvName).vault.azure.net//secrets/azureADB2CbootstrapAppID?api-version=7.4"
+        $JSON = "{'value': '$(bootstrapAppID)'}"
+        curl -X PUT -H "Authorization: Bearer $(accessTokenKeyVault)" -H "Content-Type: application/json" ${URI} -d "$JSON"
+
+        $URI = "https://$(kvName).vault.azure.net//secrets/azureADB2CbootstrapAppSecret?api-version=7.4"
+        $JSON = "{'value': '$(bootstrapAppSecret)'}"
+        curl -X PUT -H "Authorization: Bearer $(accessTokenKeyVault)" -H "Content-Type: application/json" ${URI} -d "$JSON"
+      name: Push_B2C_App_info_to_KV
+
+- stage: Create_CP_infra_lvl1_B2C_Apps
+  # dependsOn:
+  jobs:
+  - job: Terraform_plan_lvl1
+    steps:
+    - checkout: tf
+    - task: ms-devlabs.custom-terraform-tasks.custom-terraform-installer-task.TerraformInstaller@1
+      displayName: 'Install Terraform $(tfversion)'
+      inputs:
+        terraformVersion: $(tfversion)
+
+    - task: AzureKeyVault@2
+      displayName: 'Export Azure Key Vault secrets from $(kvName)'
+      inputs:
+        azureSubscription: $(serviceConnectionName)
+        KeyVaultName: $(kvName)
+        RunAsPreJob: true
+        SecretsFilter: 'azureADB2CbootstrapAppID, azureADB2CbootstrapAppSecret, azureADB2COptionsTenantId, azureADB2COptionsTenantName'
+
+    - task: AzureKeyVault@2
+      displayName: 'Export Azure Key Vault secrets from kv-terraform-$(tfCustomerName)'
+      inputs:
+        azureSubscription: $(serviceConnectionName)
+        KeyVaultName: $(tfKeyVaultName)
+        RunAsPreJob: true
+        SecretsFilter: 'sp-terraform-owner-id, sp-terraform-owner-secret'
+  
+    - bash: |
+        cd tf/level1
+        export ARM_TENANT_ID="$(tenant)"
+        export ARM_CLIENT_ID="$(sp-terraform-owner-id)"
+        export ARM_CLIENT_SECRET="$(sp-terraform-owner-secret)"
+        export ARM_SUBSCRIPTION_ID="$(subscriptionId)"
+        az login --service-principal --username $ARM_CLIENT_ID --password $ARM_CLIENT_SECRET --tenant $ARM_TENANT_ID --allow-no-subscriptions
+        az account set -s $ARM_SUBSCRIPTION_ID
+        export ARM_ACCESS_KEY=$(az storage account keys list --account-name satfstate$(tfCustomerName) -o tsv --query "[0].value")
+        terraform init -backend-config="storage_account_name=satfstate$(tfCustomerName)" -backend-config="key=$(b2cTenantDisplayName)-level1"
+        export B2C_TENANT_ID="$(azureADB2COptionsTenantId)"
+        export B2C_TENANT_NAME="$(azureADB2COptionsTenantName)"
+        
+        if [[ ${{ parameters.terraformLevel1Action }} == "destroy" ]]; then
+          terraform plan -var="main_aad_client_id=$ARM_CLIENT_ID" -var="main_aad_client_secret=$ARM_CLIENT_SECRET" -var="main_aad_tenant_id=$ARM_TENANT_ID" -var="b2c_aad_client_id=$(azureADB2CbootstrapAppID)" -var="b2c_aad_client_secret=$(azureADB2CbootstrapAppSecret)" -var="b2c_aad_tenant_id=$(azureADB2COptionsTenantId)" -var="key_vault_id=$(key_vault_id)" -var="tenant_name=$(b2cTenantName)" -var="cp_domain_url=$(cpDomainURL)" -var-file="../configuration/applications.default.tfvars" -destroy
+        else
+          terraform plan -var="main_aad_client_id=$ARM_CLIENT_ID" -var="main_aad_client_secret=$ARM_CLIENT_SECRET" -var="main_aad_tenant_id=$ARM_TENANT_ID" -var="b2c_aad_client_id=$(azureADB2CbootstrapAppID)" -var="b2c_aad_client_secret=$(azureADB2CbootstrapAppSecret)" -var="b2c_aad_tenant_id=$(azureADB2COptionsTenantId)" -var="key_vault_id=$(key_vault_id)" -var="tenant_name=$(b2cTenantName)" -var="cp_domain_url=$(cpDomainURL)" -var-file="../configuration/applications.default.tfvars"
+        fi
+      name: Terraform_plan_lvl1
+
+  - job: waitForTFPlanLvl1
+    dependsOn:
+    - Terraform_plan_lvl1
+    displayName: Wait for external validation
+    pool: server
+    timeoutInMinutes: 10 # job times out
+    steps:
+    - task: ManualValidation@0
+      timeoutInMinutes: 10 # task times out
+      inputs:
+          notifyUsers: |
+          instructions: |
+            Please check the Terraform plan of level1 before deployment, if the changes are correct, confirm.
+          onTimeout: 'reject'
+
+  - job: Terraform_apply_lvl1
+    dependsOn:
+    - waitForTFPlanLvl1
+    steps:
+    - checkout: tf
+    - task: ms-devlabs.custom-terraform-tasks.custom-terraform-installer-task.TerraformInstaller@1
+      displayName: 'Install Terraform $(tfversion)'
+      inputs:
+        terraformVersion: $(tfversion)
+
+    - task: AzureKeyVault@2
+      displayName: 'Export Azure Key Vault secrets from $(kvName)'
+      inputs:
+        azureSubscription: $(serviceConnectionName)
+        KeyVaultName: $(kvName)
+        RunAsPreJob: true
+        SecretsFilter: 'azureADB2CbootstrapAppID, azureADB2CbootstrapAppSecret, azureADB2COptionsTenantId, azureADB2COptionsTenantName'
+
+    - task: AzureKeyVault@2
+      displayName: 'Export Azure Key Vault secrets from kv-terraform-$(tfCustomerName)'
+      inputs:
+        azureSubscription: $(serviceConnectionName)
+        KeyVaultName: $(tfKeyVaultName)
+        RunAsPreJob: true
+        SecretsFilter: 'sp-terraform-owner-id, sp-terraform-owner-secret'
+
+    - bash: |
+        cd tf/level1
+        export ARM_TENANT_ID="$(tenant)"
+        export ARM_CLIENT_ID="$(sp-terraform-owner-id)"
+        export ARM_CLIENT_SECRET="$(sp-terraform-owner-secret)"
+        export ARM_SUBSCRIPTION_ID="$(subscriptionId)"
+        az login --service-principal --username $ARM_CLIENT_ID --password $ARM_CLIENT_SECRET --tenant $ARM_TENANT_ID --allow-no-subscriptions
+        az account set -s $ARM_SUBSCRIPTION_ID
+        export ARM_ACCESS_KEY=$(az storage account keys list --account-name satfstate$(tfCustomerName) -o tsv --query "[0].value")
+        terraform init -backend-config="storage_account_name=satfstate$(tfCustomerName)" -backend-config="key=$(b2cTenantDisplayName)-level1"
+        export B2C_TENANT_ID="$(azureADB2COptionsTenantId)"
+        export B2C_TENANT_NAME="$(azureADB2COptionsTenantName)"
+        export B2C_ARM_CLIENT_ID="$(azureADB2CbootstrapAppID)"
+        export B2C_ARM_CLIENT_SECRET="$(azureADB2CbootstrapAppSecret)"
+        terraform ${{ parameters.terraformLevel1Action }} -var="main_aad_client_id=$ARM_CLIENT_ID" -var="main_aad_client_secret=$ARM_CLIENT_SECRET" -var="main_aad_tenant_id=$ARM_TENANT_ID" -var="b2c_aad_client_id=$(azureADB2CbootstrapAppID)" -var="b2c_aad_client_secret=$(azureADB2CbootstrapAppSecret)" -var="b2c_aad_tenant_id=$(azureADB2COptionsTenantId)" -var="key_vault_id=$(key_vault_id)" -var="tenant_name=$(b2cTenantName)" -var="cp_domain_url=$(cpDomainURL)" -var-file="../configuration/applications.default.tfvars" -auto-approve
+      name: Terraform_apply_lvl1
+
+
+- stage: Create_CP_infra_lvl2_B2C_Apps_secrets
+  # dependsOn:
+  jobs:
+  - job: Terraform_plan_lvl2
+    steps:
+    - checkout: tf
+    - task: ms-devlabs.custom-terraform-tasks.custom-terraform-installer-task.TerraformInstaller@1
+      displayName: 'Install Terraform $(tfversion)'
+      inputs:
+        terraformVersion: $(tfversion)
+
+    - task: AzureKeyVault@2
+      displayName: 'Export Azure Key Vault secrets from $(kvName)'
+      inputs:
+        azureSubscription: $(serviceConnectionName)
+        KeyVaultName: $(kvName)
+        RunAsPreJob: true
+        SecretsFilter: 'azureADB2CbootstrapAppID, azureADB2CbootstrapAppSecret, azureADB2COptionsTenantId, azureADB2COptionsTenantName'
+
+    - task: AzureKeyVault@2
+      displayName: 'Export Azure Key Vault secrets from kv-terraform-$(tfCustomerName)'
+      inputs:
+        azureSubscription: $(serviceConnectionName)
+        KeyVaultName: $(tfKeyVaultName)
+        RunAsPreJob: true
+        SecretsFilter: 'sp-terraform-owner-id, sp-terraform-owner-secret'
+
+    - bash: |
+        cd tf/level2
+        export ARM_TENANT_ID="$(tenant)"
+        export ARM_CLIENT_ID="$(sp-terraform-owner-id)"
+        export ARM_CLIENT_SECRET="$(sp-terraform-owner-secret)"
+        export ARM_SUBSCRIPTION_ID="$(subscriptionId)"
+        az login --service-principal --username $ARM_CLIENT_ID --password $ARM_CLIENT_SECRET --tenant $ARM_TENANT_ID --allow-no-subscriptions
+        az account set -s $ARM_SUBSCRIPTION_ID
+        export ARM_ACCESS_KEY=$(az storage account keys list --account-name satfstate$(tfCustomerName) -o tsv --query "[0].value")
+        terraform init -backend-config="storage_account_name=satfstate$(tfCustomerName)" -backend-config="key=$(b2cTenantDisplayName)-level2"
+        export B2C_TENANT_ID="$(azureADB2COptionsTenantId)"
+        export B2C_TENANT_NAME="$(azureADB2COptionsTenantName)"
+        if [[ ${{ parameters.terraformLevel2Action }} == "destroy" ]]; then
+          terraform plan -var="main_aad_client_id=$ARM_CLIENT_ID" -var="main_aad_client_secret=$ARM_CLIENT_SECRET" -var="main_aad_tenant_id=$ARM_TENANT_ID" -var="b2c_aad_client_id=$(azureADB2CbootstrapAppID)" -var="b2c_aad_client_secret=$(azureADB2CbootstrapAppSecret)" -var="b2c_aad_tenant_id=$(azureADB2COptionsTenantId)" -var="storage_account_name=satfstate$(tfCustomerName)" -var="tfstate_key_level1=$(b2cTenantDisplayName)-level1" -var="key_vault_id=$(key_vault_id)" -var="cp_impersonation_url=$(cpImpersonationURL)" -var="cp_b2c_policies_developer_mode=$(cpB2CPoliciesDeveloperMode)" -var-file="../configuration/applications.default.tfvars" -destroy
+        else
+          terraform plan -var="main_aad_client_id=$ARM_CLIENT_ID" -var="main_aad_client_secret=$ARM_CLIENT_SECRET" -var="main_aad_tenant_id=$ARM_TENANT_ID" -var="b2c_aad_client_id=$(azureADB2CbootstrapAppID)" -var="b2c_aad_client_secret=$(azureADB2CbootstrapAppSecret)" -var="b2c_aad_tenant_id=$(azureADB2COptionsTenantId)" -var="storage_account_name=satfstate$(tfCustomerName)" -var="tfstate_key_level1=$(b2cTenantDisplayName)-level1" -var="key_vault_id=$(key_vault_id)" -var="cp_impersonation_url=$(cpImpersonationURL)" -var="cp_b2c_policies_developer_mode=$(cpB2CPoliciesDeveloperMode)" -var-file="../configuration/applications.default.tfvars"
+        fi
+      name: Terraform_plan_lvl2
+
+  - job: waitForTFPlanLvl2
+    dependsOn:
+    - Terraform_plan_lvl2
+    displayName: Wait for external validation
+    pool: server
+    timeoutInMinutes: 10 # job times out
+    steps:
+    - task: ManualValidation@0
+      timeoutInMinutes: 10 # task times out
+      inputs:
+          notifyUsers: |
+          instructions: |
+            Please check the Terraform plan of level2 before deployment, if the changes are correct, confirm.
+          onTimeout: 'reject'
+
+  - job: Terraform_apply_lvl2
+    dependsOn:
+    - waitForTFPlanLvl2
+    steps:
+    - checkout: tf
+    - task: ms-devlabs.custom-terraform-tasks.custom-terraform-installer-task.TerraformInstaller@1
+      displayName: 'Install Terraform $(tfversion)'
+      inputs:
+        terraformVersion: $(tfversion)
+
+    - task: AzureKeyVault@2
+      displayName: 'Export Azure Key Vault secrets from $(kvName)'
+      inputs:
+        azureSubscription: $(serviceConnectionName)
+        KeyVaultName: $(kvName)
+        RunAsPreJob: true
+        SecretsFilter: 'azureADB2CbootstrapAppID, azureADB2CbootstrapAppSecret, azureADB2COptionsTenantId, azureADB2COptionsTenantName'
+
+    - task: AzureKeyVault@2
+      displayName: 'Export Azure Key Vault secrets from kv-terraform-$(tfCustomerName)'
+      inputs:
+        azureSubscription: $(serviceConnectionName)
+        KeyVaultName: $(tfKeyVaultName)
+        RunAsPreJob: true
+        SecretsFilter: 'sp-terraform-owner-id, sp-terraform-owner-secret'
+
+    - bash: |
+        cd tf/level2
+        export ARM_TENANT_ID="$(tenant)"
+        export ARM_CLIENT_ID="$(sp-terraform-owner-id)"
+        export ARM_CLIENT_SECRET="$(sp-terraform-owner-secret)"
+        export ARM_SUBSCRIPTION_ID="$(subscriptionId)"
+        az login --service-principal --username $ARM_CLIENT_ID --password $ARM_CLIENT_SECRET --tenant $ARM_TENANT_ID --allow-no-subscriptions
+        az account set -s $ARM_SUBSCRIPTION_ID
+        export ARM_ACCESS_KEY=$(az storage account keys list --account-name satfstate$(tfCustomerName) -o tsv --query "[0].value")
+        terraform init -backend-config="storage_account_name=satfstate$(tfCustomerName)" -backend-config="key=$(b2cTenantDisplayName)-level2"
+        export B2C_TENANT_ID="$(azureADB2COptionsTenantId)"
+        export B2C_TENANT_NAME="$(azureADB2COptionsTenantName)"
+        export B2C_ARM_CLIENT_ID="$(azureADB2CbootstrapAppID)"
+        export B2C_ARM_CLIENT_SECRET="$(azureADB2CbootstrapAppSecret)"
+        terraform ${{ parameters.terraformLevel2Action }} -var="main_aad_client_id=$ARM_CLIENT_ID" -var="main_aad_client_secret=$ARM_CLIENT_SECRET" -var="main_aad_tenant_id=$ARM_TENANT_ID" -var="b2c_aad_client_id=$(azureADB2CbootstrapAppID)" -var="b2c_aad_client_secret=$(azureADB2CbootstrapAppSecret)" -var="b2c_aad_tenant_id=$(azureADB2COptionsTenantId)" -var="storage_account_name=satfstate$(tfCustomerName)" -var="tfstate_key_level1=$(b2cTenantDisplayName)-level1" -var="key_vault_id=$(key_vault_id)" -var="cp_impersonation_url=$(cpImpersonationURL)" -var="cp_b2c_policies_developer_mode=$(cpB2CPoliciesDeveloperMode)" -var-file="../configuration/applications.default.tfvars" -auto-approve
+      name: Terraform_apply_lvl2
+
+- stage: Create_CP_infra_lvl3_B2C_Policies
+  # dependsOn:
+  jobs:
+  - job: Terraform_plan_lvl3
+    steps:
+    - checkout: b2c_policies
+    - task: ms-devlabs.custom-terraform-tasks.custom-terraform-installer-task.TerraformInstaller@1
+      displayName: 'Install Terraform $(tfversion)'
+      inputs:
+        terraformVersion: $(tfversion)
+
+    - task: AzureKeyVault@2
+      displayName: 'Export Azure Key Vault secrets from $(kvName)'
+      inputs:
+        azureSubscription: $(serviceConnectionName)
+        KeyVaultName: $(kvName)
+        RunAsPreJob: true
+        SecretsFilter: 'azureADB2CbootstrapAppID, azureADB2CbootstrapAppSecret, azureADB2COptionsTenantId, cpAzureMainTenantApplicationID, azureADB2COptionsTenantName, cpAzureMainTenantApplicationSecret, cpWebUrlCPImpersonation, cpB2CPoliciesDeveloperMode, azureADB2COptionsApplicationIdCaImpersonation, cpInstrumentationKey, cpLoginTemplatesSAName, cpLoginTemplatesSAContainerName, cpAzureADB2CApplicationIDb2cExtensionsApp, cpAzureADB2CApplicationObjectIDb2cExtensionsApp, cpAzureADB2CApplicationIDProxyIdentityExperienceFramework, cpAzureADB2CApplicationIDIdentityExperienceFramework, cpAzureADB2CApplicationIDAADb2cPolicy, cpAzureADB2CApplicationSecretAADb2cPolicy'
+
+    - task: AzureKeyVault@2
+      displayName: 'Export Azure Key Vault secrets from kv-terraform-$(tfCustomerName)'
+      inputs:
+        azureSubscription: $(serviceConnectionName)
+        KeyVaultName: $(tfKeyVaultName)
+        RunAsPreJob: true
+        SecretsFilter: 'sp-terraform-owner-id, sp-terraform-owner-secret'
+
+    - pwsh: |
+        cd b2c-policies
+        $files = Get-ChildItem -Filter *.xml
+        foreach ($file in $files) {
+          (Get-Content -Path "$($file.Name)") | ForEach-Object { $_ -replace '\$cpAzureMainTenantApplicationID', "$(cpAzureMainTenantApplicationID)" -replace '\$azureADB2COptionsTenantName', "$(azureADB2COptionsTenantName)" -replace '\$azureADB2COptionsTenantId', "$(azureADB2COptionsTenantId)" -replace '\$cpWebUrlCPImpersonation', "$(cpWebUrlCPImpersonation)" -replace '\$cpB2CPoliciesDeveloperMode', "$(cpB2CPoliciesDeveloperMode)" -replace '\$azureADB2COptionsApplicationIdCaImpersonation', "$(azureADB2COptionsApplicationIdCaImpersonation)" -replace '\$cpInstrumentationKey', "$(cpInstrumentationKey)" -replace '\$cpLoginTemplatesSAName', "$(cpLoginTemplatesSAName)" -replace '\$cpLoginTemplatesSAContainerName', "$(cpLoginTemplatesSAContainerName)" -replace '\$cpAzureADB2CApplicationIDb2cExtensionsApp', "$(cpAzureADB2CApplicationIDb2cExtensionsApp)" -replace '\$cpAzureADB2CApplicationObjectIDb2cExtensionsApp', "$(cpAzureADB2CApplicationObjectIDb2cExtensionsApp)" -replace '\$cpAzureADB2CApplicationIDProxyIdentityExperienceFramework', "$(cpAzureADB2CApplicationIDProxyIdentityExperienceFramework)" -replace '\$cpAzureADB2CApplicationIDIdentityExperienceFramework', "$(cpAzureADB2CApplicationIDIdentityExperienceFramework)" -replace '\$cpAzureADB2CApplicationIDAADb2cPolicy', "$(cpAzureADB2CApplicationIDAADb2cPolicy)" -replace '\$cpAzureADB2CApplicationSecretAADb2cPolicy', "$(cpAzureADB2CApplicationSecretAADb2cPolicy)" } | Set-Content -Path "../tf/level3/$($file.Name)"
+          Write-Host "Policy $($file.Name) content:"
+          Get-Content -Path "../tf/level3/$($file.Name)"
+          Write-Host ""
+        }
+      name: Preparing_XML_files_for_B2C_policies
+
+    - bash: |
+        cd tf/level3
+        export ARM_TENANT_ID="$(tenant)"
+        export ARM_CLIENT_ID="$(sp-terraform-owner-id)"
+        export ARM_CLIENT_SECRET="$(sp-terraform-owner-secret)"
+        export ARM_SUBSCRIPTION_ID="$(subscriptionId)"
+        az login --service-principal --username $ARM_CLIENT_ID --password $ARM_CLIENT_SECRET --tenant $ARM_TENANT_ID --allow-no-subscriptions
+        az account set -s $ARM_SUBSCRIPTION_ID
+        export ARM_ACCESS_KEY=$(az storage account keys list --account-name satfstate$(tfCustomerName) -o tsv --query "[0].value")
+        terraform init -backend-config="storage_account_name=satfstate$(tfCustomerName)" -backend-config="key=$(b2cTenantDisplayName)-level3"
+        export B2C_TENANT_ID="$(azureADB2COptionsTenantId)"
+        export B2C_TENANT_NAME="$(azureADB2COptionsTenantName)"
+        if [[ ${{ parameters.terraformLevel3Action }} == "destroy" ]]; then
+          terraform plan -var="b2c_aad_client_id=$(azureADB2CbootstrapAppID)" -var="b2c_aad_client_secret=$(azureADB2CbootstrapAppSecret)" -var="b2c_aad_tenant_id=$(azureADB2COptionsTenantId)" -var="azure_ad_app_secret=$(cpAzureMainTenantApplicationSecret)" -destroy
+        else
+          terraform plan -var="b2c_aad_client_id=$(azureADB2CbootstrapAppID)" -var="b2c_aad_client_secret=$(azureADB2CbootstrapAppSecret)" -var="b2c_aad_tenant_id=$(azureADB2COptionsTenantId)" -var="azure_ad_app_secret=$(cpAzureMainTenantApplicationSecret)"
+        fi
+      name: Terraform_plan_lvl3
+
+  - job: waitForTFPlanLvl3
+    dependsOn:
+    - Terraform_plan_lvl3
+    displayName: Wait for external validation
+    pool: server
+    timeoutInMinutes: 10 # job times out
+    steps:
+    - task: ManualValidation@0
+      timeoutInMinutes: 10 # task times out
+      inputs:
+          notifyUsers: |
+          instructions: |
+            Please check the Terraform plan of level3 before deployment, if the changes are correct, confirm.
+          onTimeout: 'reject'
+
+  - job: Terraform_apply_lvl3
+    dependsOn:
+    - waitForTFPlanLvl3
+    steps:
+    - checkout: b2c_policies
+    - task: ms-devlabs.custom-terraform-tasks.custom-terraform-installer-task.TerraformInstaller@1
+      displayName: 'Install Terraform $(tfversion)'
+      inputs:
+        terraformVersion: $(tfversion)
+
+    - task: AzureKeyVault@2
+      displayName: 'Export Azure Key Vault secrets from $(kvName)'
+      inputs:
+        azureSubscription: $(serviceConnectionName)
+        KeyVaultName: $(kvName)
+        RunAsPreJob: true
+        SecretsFilter: 'azureADB2CbootstrapAppID, azureADB2CbootstrapAppSecret, azureADB2COptionsTenantId, cpAzureMainTenantApplicationID, azureADB2COptionsTenantName, cpAzureMainTenantApplicationSecret, cpWebUrlCPImpersonation, cpB2CPoliciesDeveloperMode, azureADB2COptionsApplicationIdCaImpersonation, cpInstrumentationKey, cpLoginTemplatesSAName, cpLoginTemplatesSAContainerName, cpAzureADB2CApplicationIDb2cExtensionsApp, cpAzureADB2CApplicationObjectIDb2cExtensionsApp, cpAzureADB2CApplicationIDProxyIdentityExperienceFramework, cpAzureADB2CApplicationIDIdentityExperienceFramework, cpAzureADB2CApplicationIDAADb2cPolicy, cpAzureADB2CApplicationSecretAADb2cPolicy'
+
+    - task: AzureKeyVault@2
+      displayName: 'Export Azure Key Vault secrets from kv-terraform-$(tfCustomerName)'
+      inputs:
+        azureSubscription: $(serviceConnectionName)
+        KeyVaultName: $(tfKeyVaultName)
+        RunAsPreJob: true
+        SecretsFilter: 'sp-terraform-owner-id, sp-terraform-owner-secret'
+
+    - pwsh: |
+        cd b2c-policies
+        $files = Get-ChildItem -Filter *.xml
+        foreach ($file in $files) {
+          (Get-Content -Path "$($file.Name)") | ForEach-Object { $_ -replace '\$cpAzureMainTenantApplicationID', "$(cpAzureMainTenantApplicationID)" -replace '\$azureADB2COptionsTenantName', "$(azureADB2COptionsTenantName)" -replace '\$azureADB2COptionsTenantId', "$(azureADB2COptionsTenantId)" -replace '\$cpWebUrlCPImpersonation', "$(cpWebUrlCPImpersonation)" -replace '\$cpB2CPoliciesDeveloperMode', "$(cpB2CPoliciesDeveloperMode)" -replace '\$azureADB2COptionsApplicationIdCaImpersonation', "$(azureADB2COptionsApplicationIdCaImpersonation)" -replace '\$cpInstrumentationKey', "$(cpInstrumentationKey)" -replace '\$cpLoginTemplatesSAName', "$(cpLoginTemplatesSAName)" -replace '\$cpLoginTemplatesSAContainerName', "$(cpLoginTemplatesSAContainerName)" -replace '\$cpAzureADB2CApplicationIDb2cExtensionsApp', "$(cpAzureADB2CApplicationIDb2cExtensionsApp)" -replace '\$cpAzureADB2CApplicationObjectIDb2cExtensionsApp', "$(cpAzureADB2CApplicationObjectIDb2cExtensionsApp)" -replace '\$cpAzureADB2CApplicationIDProxyIdentityExperienceFramework', "$(cpAzureADB2CApplicationIDProxyIdentityExperienceFramework)" -replace '\$cpAzureADB2CApplicationIDIdentityExperienceFramework', "$(cpAzureADB2CApplicationIDIdentityExperienceFramework)" -replace '\$cpAzureADB2CApplicationIDAADb2cPolicy', "$(cpAzureADB2CApplicationIDAADb2cPolicy)" -replace '\$cpAzureADB2CApplicationSecretAADb2cPolicy', "$(cpAzureADB2CApplicationSecretAADb2cPolicy)" } | Set-Content -Path "../tf/level3/$($file.Name)"
+          Write-Host "Policy $($file.Name) content:"
+          Get-Content -Path "../tf/level3/$($file.Name)"
+          Write-Host ""
+        }
+      name: Preparing_XML_files_for_B2C_policies
+
+    - bash: |
+        cd tf/level3
+        export ARM_TENANT_ID="$(tenant)"
+        export ARM_CLIENT_ID="$(sp-terraform-owner-id)"
+        export ARM_CLIENT_SECRET="$(sp-terraform-owner-secret)"
+        export ARM_SUBSCRIPTION_ID="$(subscriptionId)"
+        az login --service-principal --username $ARM_CLIENT_ID --password $ARM_CLIENT_SECRET --tenant $ARM_TENANT_ID --allow-no-subscriptions
+        az account set -s $ARM_SUBSCRIPTION_ID
+        export ARM_ACCESS_KEY=$(az storage account keys list --account-name satfstate$(tfCustomerName) -o tsv --query "[0].value")
+        terraform init -backend-config="storage_account_name=satfstate$(tfCustomerName)" -backend-config="key=$(b2cTenantDisplayName)-level3"
+        export B2C_TENANT_ID="$(azureADB2COptionsTenantId)"
+        export B2C_TENANT_NAME="$(azureADB2COptionsTenantName)"
+        export B2C_ARM_CLIENT_ID="$(azureADB2CbootstrapAppID)"
+        export B2C_ARM_CLIENT_SECRET="$(azureADB2CbootstrapAppSecret)"
+        terraform ${{ parameters.terraformLevel3Action }} -var="b2c_aad_client_id=$(azureADB2CbootstrapAppID)" -var="b2c_aad_client_secret=$(azureADB2CbootstrapAppSecret)" -var="b2c_aad_tenant_id=$(azureADB2COptionsTenantId)" -var="azure_ad_app_secret=$(cpAzureMainTenantApplicationSecret)" -auto-approve
+      name: Terraform_apply_lvl3
+
+- stage: Create_login_templates
+  # dependsOn:
+  jobs:
+  - job: Preparing_login_templates
+    steps:
+    - checkout: b2c_login_templates
+    - task: AzureKeyVault@2
+      displayName: 'Export Azure Key Vault secrets from $(kvName)'
+      inputs:
+        azureSubscription: '$(serviceConnectionName)'
+        KeyVaultName: $(kvName)
+        RunAsPreJob: true
+        SecretsFilter: 'cpLoginTemplatesSAName, cpLoginTemplatesSAContainerName, azureADB2COptionsTenantName, azureADB2CApplicationIdCPUI, cpLoginTemplatesSAName, cpLoginTemplatesSAPrimaryAccessKey'
+
+    - pwsh: |
+        cd login-templates/$(loginTemplate)
+        $files = Get-ChildItem -Filter *.html
+        foreach ($file in $files) {
+          (Get-Content -Path "$($file.Name)") | ForEach-Object { $_ -replace '\$\{\{ cpLoginTemplatesSAName \}\}', "$(cpLoginTemplatesSAName)" -replace '\$\{\{ cpLoginTemplatesSAContainerName \}\}', "$(cpLoginTemplatesSAContainerName)" -replace '\$\{\{ azureADB2COptionsTenantName \}\}', "$(azureADB2COptionsTenantName)" -replace '\$\{\{ azureADB2CApplicationIdCPUI \}\}', "$(azureADB2CApplicationIdCPUI)" -replace '\$\{\{ cpDomainURL \}\}', "$(cpDomainURL)"} | Set-Content -Path "$($file.Name)"
+          Write-Host "Policy $($file.Name) content:"
+          Get-Content -Path "$($file.Name)"
+          Write-Host ""
+        }
+      name: Preparing_Login_Templates_files_for_SA
+
+    - pwsh: |
+        cd login-templates/$(loginTemplate)
+        $files = Get-ChildItem
+        az storage blob delete-batch --account-name "$(cpLoginTemplatesSAName)" --account-key "$(cpLoginTemplatesSAPrimaryAccessKey)" --source "$(cpLoginTemplatesSAContainerName)"
+        foreach ($file in $files) {
+          Write-Host "Policy $($file.Name) content:"
+          az storage blob upload --file "$($file.Name)" --container-name "$(cpLoginTemplatesSAContainerName)" --account-name "$(cpLoginTemplatesSAName)" --name "$($file.Name)" --account-key "$(cpLoginTemplatesSAPrimaryAccessKey)" --overwrite
+          Write-Host ""
+        }
+      name: Upload_Login_Templates_files_to_SA

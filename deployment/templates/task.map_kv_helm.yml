@@ -1,0 +1,31 @@
+parameters:
+  - name: serviceConnectionName
+
+steps:
+  - task: AzureCLI@2
+    displayName: 'Map KV variables with Helm'
+    inputs:
+      azureSubscription: ${{ parameters.serviceConnectionName }}
+      scriptType: bash
+      scriptLocation: inlineScript
+      inlineScript: |
+        input_file="$(System.DefaultWorkingDirectory)/helms/temp_vars.txt"
+        
+        ### change the structure of the file with variables
+        output_file="helm_vars.txt"
+        > "$output_file"
+        # replace /n with comma
+        # sed ':a;N;$!ba;s/\n/,/g' "$input_file" >> "$output_file"
+
+        # replace /n with comma and shield varables values with ""
+        awk -F'=' '{ printf("%s=\"%s\",",$1,$2) }' "$input_file" >> "$output_file"
+        # remove all commas at the end of the file
+        sed -i 's/,*$//' "$output_file"
+        # remove all free lines
+        sed -i '/^$/d' "$output_file"
+        
+        # set values for variables with Key Vault values
+        tempVars=$(envsubst < $output_file)
+        # set a variable to be used by Helm
+        echo "##vso[task.setvariable variable=TempVars]$tempVars"
+        # echo "$tempVars"

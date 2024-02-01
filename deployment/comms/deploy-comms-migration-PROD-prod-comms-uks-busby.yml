@@ -1,0 +1,159 @@
+trigger: none
+
+resources:
+  repositories:
+  - repository: release
+    type: git
+    name: Samsung/ReleaseVersion
+    trigger: none
+    ref: refs/heads/main
+  - repository: helm
+    type: git
+    name: Samsung/helms
+    trigger: none
+    ref: refs/heads/main
+
+variables:
+  customer: 'busby'
+  environment: 'prod'
+  region: 'uks'
+  namespace: 'prod-comms'
+  serviceConnectionName: 'glow-busby-subs'
+  kubernetesClusterResourceGroup: "rg-prod-uks-busby"
+  kubernetesClusterName: "prod-uks-busby"
+  chartPath: "helms/helms/comms"
+
+name: deploy-comms-migration-PROD-uks-busby-$(date:yyyyMMdd)-buildID-$(Build.BuildId)
+
+pool:
+  name: GlowProdPool
+
+stages:
+- stage: Deploy_release
+  pool: GlowProdPool
+  jobs:
+  - deployment: Deploy
+    environment: 'EE_UKS_PROD_COMMS'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - checkout: self
+          - checkout: helm
+          - checkout: release
+
+          - task: AzureKeyVault@2
+            displayName: 'Export Azure Key Vault secrets from kv-$(environment)-$(region)-$(customer)'
+            inputs:
+              azureSubscription: $(serviceConnectionName)
+              KeyVaultName: kv-$(environment)-$(region)-$(customer)
+              RunAsPreJob: true
+
+          - task: AzureCLI@2
+            displayName: 'Set commitHash'
+            inputs:
+              azureSubscription: $(serviceConnectionName)
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                cd helms
+                commitHash=$(git rev-parse --short HEAD)
+                echo "##vso[task.setvariable variable=commitHash]$commitHash"
+                echo "$commitHash"
+
+          - task: KubectlInstaller@0
+            displayName: 'Install Kubectl 1.27.3'
+            inputs: 
+              kubectlVersion: 1.27.3 
+
+          - task: HelmInstaller@1
+            displayName: 'Install Helm 3.10.0'
+            inputs:
+              helmVersionToInstall: 3.10.0
+              
+          - template: ../templates/ps.set_images.yml
+            parameters:
+              customer: "$(customer)"
+              environment: "$(environment)"
+              region: "$(region)"
+              namespace: "$(namespace)"
+
+          - template: ../templates/task.map_kv_helm.yml
+            parameters:
+              serviceConnectionName: "$(serviceConnectionName)"
+
+          # gatewayapi delete
+          - template: ../templates/application.delete.yml
+            parameters:
+              serviceName: "gatewayapi"
+              serviceConnectionName: "$(serviceConnectionName)"
+              kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+              kubernetesClusterName: "$(kubernetesClusterName)"
+              namespace: "$(namespace)"
+
+          # gatewaymigration
+          - template: ../templates/application.yml
+            parameters:
+              serviceName: "gatewaymigration"
+              imageRepository: "$(imageRepository)/gatewaymigration"
+              imageTag: "$(gatewaymigrationCI)"
+              chartPath: "$(chartPath)"
+              serviceConnectionName: "$(serviceConnectionName)"
+              kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+              kubernetesClusterName: "$(kubernetesClusterName)"
+              namespace: "$(namespace)"
+              commitHash: "$(commitHash)"
+              TempVars: "$(TempVars)"
+
+          - task: Kubernetes@1
+            displayName: 'kubectl login'
+            inputs:
+              connectionType: 'Azure Resource Manager'
+              azureSubscriptionEndpoint: "$(serviceConnectionName)"
+              azureResourceGroup: "$(kubernetesClusterResourceGroup)"
+              kubernetesCluster: "$(kubernetesClusterName)"
+              useClusterAdmin: true
+              command: login
+
+          - task: AzureCLI@2
+            displayName: 'GET Migration status for gatewaymigration'
+            inputs:
+              azureSubscription: "$(serviceConnectionName)"
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                while : ; do
+                  success_log_count=$(kubectl logs deployment/gatewaymigration -n $(namespace) | grep "Glow.Comms.Gateway.Migrations: SUCCESS" | wc -l)
+                  failed_log_count=$(kubectl logs deployment/gatewaymigration -n $(namespace) | grep "Glow.Comms.Gateway.Migrations: FAILED" | wc -l)
+                  if [ "$success_log_count" -ge "1" ]; then
+                    echo "Gateway Migration has been complited"
+                    break 
+                  elif [ "$failed_log_count" -ge "1" ]; then
+                    echo "Gateway Migration is FAILED"
+                    exit 1
+                  fi
+                done
+              timeoutInMinutes: 10
+
+          # gatewayapi
+          - template: ../templates/application.yml
+            parameters:
+              serviceName: "gatewayapi"
+              imageRepository: "$(imageRepository)/gatewayapi"
+              imageTag: "$(gatewayapiCI)"
+              chartPath: "$(chartPath)"
+              serviceConnectionName: "$(serviceConnectionName)"
+              kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+              kubernetesClusterName: "$(kubernetesClusterName)"
+              namespace: "$(namespace)"
+              commitHash: "$(commitHash)"
+              TempVars: "$(TempVars)"
+
+          # gatewaymigration delete
+          - template: ../templates/application.delete.yml
+            parameters:
+              serviceName: "gatewaymigration"
+              serviceConnectionName: "$(serviceConnectionName)"
+              kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+              kubernetesClusterName: "$(kubernetesClusterName)"
+              namespace: "$(namespace)"

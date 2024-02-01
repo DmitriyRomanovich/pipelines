@@ -1,0 +1,230 @@
+trigger: none
+
+resources:
+  pipelines:
+  - pipeline: build_pipeline_buildermigration # Name of the pipeline resource.
+    source: "re-BuilderAPImigration" # The name of the pipeline referenced by this pipeline resource.
+    project: Samsung # Required only if the source pipeline is in another project
+  - pipeline: build_pipeline_executionmigration # Name of the pipeline resource.
+    source: "re-ExecutionAPImigration" # The name of the pipeline referenced by this pipeline resource.
+    project: Samsung # Required only if the source pipeline is in another project
+  - pipeline: build_pipeline_rebuilderapi # Name of the pipeline resource.
+    source: "reBuilderAPI-CI" # The name of the pipeline referenced by this pipeline resource.
+    project: Samsung # Required only if the source pipeline is in another project
+  - pipeline: build_pipeline_reexecutionapi # Name of the pipeline resource.
+    source: "reExecutionAPI-CI" # The name of the pipeline referenced by this pipeline resource.
+    project: Samsung # Required only if the source pipeline is in another project
+  repositories:
+  - repository: helm
+    type: git
+    name: Samsung/helms
+    trigger: none
+    ref: refs/heads/main
+
+variables:
+  customer: 'busby'
+  environment: 'dev'
+  region: 'uks'
+  namespace: 'dev-eng'
+  serviceConnectionName: 'glow-busby-subs'
+  kubernetesClusterResourceGroup: "rg-dev-uks-busby"
+  kubernetesClusterName: "dev-uks-busby"
+  chartPath: "helms/helms/rule-engine"
+
+name: deploy-RE-migration-DEV-uks-busby-$(date:yyyyMMdd)-buildID-$(Build.BuildId)
+
+pool:
+  name: GlowDevPool
+
+stages:  
+- stage: Deploy_release
+  jobs:  
+  - job: Deploy 
+    steps:
+    - checkout: self
+    # - checkout: release
+    - checkout: helm
+
+    - task: AzureKeyVault@2
+      displayName: 'Export Azure Key Vault secrets from kv-$(environment)-$(region)-$(customer)'
+      inputs:
+        azureSubscription: $(serviceConnectionName)
+        KeyVaultName: kv-$(environment)-$(region)-$(customer)
+        RunAsPreJob: true
+
+    - task: AzureCLI@2
+      displayName: 'Set commitHash'
+      inputs:
+        azureSubscription: $(serviceConnectionName)
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          cd helms
+          commitHash=$(git rev-parse --short HEAD)
+          echo "##vso[task.setvariable variable=commitHash]$commitHash"
+          echo "$commitHash"
+
+    - task: KubectlInstaller@0
+      displayName: 'Install Kubectl 1.27.3'
+      inputs: 
+        kubectlVersion: 1.27.3 
+
+    - task: HelmInstaller@1
+      displayName: 'Install Helm 3.10.0'
+      inputs:
+        helmVersionToInstall: 3.10.0
+        
+    # - template: templates/ps.set_images.yml
+    #   parameters:
+    #     customer: "$(customer)"
+    #     environment: "$(environment)"
+    #     region: "$(region)"
+    #     namespace: "$(namespace)"
+
+    - template: ../templates/task.map_kv_helm.yml
+      parameters:
+        serviceConnectionName: "$(serviceConnectionName)"
+
+    - task: Kubernetes@1
+      displayName: 'kubectl login'
+      inputs:
+        connectionType: 'Azure Resource Manager'
+        azureSubscriptionEndpoint: "$(serviceConnectionName)"
+        azureResourceGroup: "$(kubernetesClusterResourceGroup)"
+        kubernetesCluster: "$(kubernetesClusterName)"
+        useClusterAdmin: true
+        command: login
+
+    # rebuilderapi delete
+    - template: ../templates/application.delete.yml
+      parameters:
+        serviceName: "rebuilderapi"
+        serviceConnectionName: "$(serviceConnectionName)"
+        kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+        kubernetesClusterName: "$(kubernetesClusterName)"
+        namespace: "$(namespace)"
+
+    # reexecutionapi delete
+    - template: ../templates/application.delete.yml
+      parameters:
+        serviceName: "reexecutionapi"
+        serviceConnectionName: "$(serviceConnectionName)"
+        kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+        kubernetesClusterName: "$(kubernetesClusterName)"
+        namespace: "$(namespace)"
+
+    # buildermigration
+    - template: ../templates/application.yml
+      parameters:
+        serviceName: "buildermigration"
+        imageRepository: "$(imageRepository)/re-builder-api-migration"
+        imageTag: "$(resources.pipeline.build_pipeline_buildermigration.runName)"
+        chartPath: "$(chartPath)"
+        serviceConnectionName: "$(serviceConnectionName)"
+        kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+        kubernetesClusterName: "$(kubernetesClusterName)"
+        namespace: "$(namespace)"
+        commitHash: "$(commitHash)"
+        TempVars: "$(TempVars)"
+
+    # get migration status for buildermigration
+    - task: AzureCLI@2
+      displayName: 'GET Migration status for gatewaymigration'
+      inputs:
+        azureSubscription: "$(serviceConnectionName)"
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          while : ; do
+            success_log_count=$(kubectl logs deployment/buildermigration -n $(namespace) | grep "Glow.RuleEngine.Builder.Migrations: SUCCESS" | wc -l)
+            failed_log_count=$(kubectl logs deployment/buildermigration -n $(namespace) | grep "Glow.RuleEngine.Builder.Migrations: FAILED" | wc -l)
+            if [ "$success_log_count" -ge "1" ]; then
+              echo "BuilderMigration has been complited"
+              break 
+            elif [ "$failed_log_count" -ge "1" ]; then
+              echo "BuilderMigration is FAILED"
+              exit 1
+            fi
+          done
+        timeoutInMinutes: 10
+
+    # executionmigration
+    - template: ../templates/application.yml
+      parameters:
+        serviceName: "executionmigration"
+        imageRepository: "$(imageRepository)/re-execution-api-migration"
+        imageTag: "$(resources.pipeline.build_pipeline_executionmigration.runName)"
+        chartPath: "$(chartPath)"
+        serviceConnectionName: "$(serviceConnectionName)"
+        kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+        kubernetesClusterName: "$(kubernetesClusterName)"
+        namespace: "$(namespace)"
+        commitHash: "$(commitHash)"
+        TempVars: "$(TempVars)"
+
+    # get migration status for executionmigration
+    - task: AzureCLI@2
+      displayName: 'GET Migration status for gatewaymigration'
+      inputs:
+        azureSubscription: "$(serviceConnectionName)"
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          while : ; do
+            success_log_count=$(kubectl logs deployment/executionmigration -n $(namespace) | grep "Glow.RuleEngine.Execution.Migrations: SUCCESS" | wc -l)
+            failed_log_count=$(kubectl logs deployment/executionmigration -n $(namespace) | grep "Glow.RuleEngine.Execution.Migrations: FAILED" | wc -l)
+            if [ "$success_log_count" -ge "1" ]; then
+              echo "ExecutionMigration has been complited"
+              break 
+            elif [ "$failed_log_count" -ge "1" ]; then
+              echo "ExecutionMigration is FAILED"
+              exit 1
+            fi
+          done
+        timeoutInMinutes: 10
+
+    # rebuilderapi
+    - template: ../templates/application.yml
+      parameters:
+        serviceName: "rebuilderapi"
+        imageRepository: "$(imageRepository)/re-builder-api"
+        imageTag: "$(resources.pipeline.build_pipeline_rebuilderapi.runName)"
+        chartPath: "$(chartPath)"
+        serviceConnectionName: "$(serviceConnectionName)"
+        kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+        kubernetesClusterName: "$(kubernetesClusterName)"
+        namespace: "$(namespace)"
+        commitHash: "$(commitHash)"
+        TempVars: "$(TempVars)"
+
+    # reexecutionapi
+    - template: ../templates/application.yml
+      parameters:
+        serviceName: "reexecutionapi"
+        imageRepository: "$(imageRepository)/re-execution-api"
+        imageTag: "$(resources.pipeline.build_pipeline_reexecutionapi.runName)"
+        chartPath: "$(chartPath)"
+        serviceConnectionName: "$(serviceConnectionName)"
+        kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+        kubernetesClusterName: "$(kubernetesClusterName)"
+        namespace: "$(namespace)"
+        commitHash: "$(commitHash)"
+        TempVars: "$(TempVars)"
+
+    # buildermigration delete
+    - template: ../templates/application.delete.yml
+      parameters:
+        serviceName: "buildermigration"
+        serviceConnectionName: "$(serviceConnectionName)"
+        kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+        kubernetesClusterName: "$(kubernetesClusterName)"
+        namespace: "$(namespace)"
+
+    # executionmigration delete
+    - template: ../templates/application.delete.yml
+      parameters:
+        serviceName: "executionmigration"
+        serviceConnectionName: "$(serviceConnectionName)"
+        kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+        kubernetesClusterName: "$(kubernetesClusterName)"
+        namespace: "$(namespace)"

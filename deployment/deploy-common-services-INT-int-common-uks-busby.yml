@@ -1,0 +1,202 @@
+trigger: none
+
+resources:
+  repositories:
+  - repository: release
+    type: git
+    name: Samsung/ReleaseVersion
+    trigger: none
+    ref: refs/heads/main
+  - repository: helm
+    type: git
+    name: Samsung/helms
+    trigger: none
+    ref: refs/heads/main
+
+variables:
+  customer: 'busby'
+  environment: 'int'
+  region: 'uks'
+  namespace: 'int-common'
+  serviceConnectionName: 'glow-busby-subs'
+  kubernetesClusterResourceGroup: "rg-dev-uks-busby"
+  kubernetesClusterName: "dev-uks-busby"
+  chartPath: "helms/helms/common"
+
+name: deploy-common-services-INT-uks-busby-$(date:yyyyMMdd)-buildID-$(Build.BuildId)
+
+pool:
+  name: GlowDevPool
+
+stages:  
+- stage: Deploy_release
+  jobs:  
+  - job: Deploy 
+    steps:
+    - checkout: self
+    - checkout: release
+    - checkout: helm
+
+    - task: AzureKeyVault@2
+      displayName: 'Export Azure Key Vault secrets from kv-$(environment)-$(region)-$(customer)'
+      inputs:
+        azureSubscription: $(serviceConnectionName)
+        KeyVaultName: kv-$(environment)-$(region)-$(customer)
+        RunAsPreJob: true
+
+    - task: AzureCLI@2
+      displayName: 'Set commitHash'
+      inputs:
+        azureSubscription: $(serviceConnectionName)
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          cd helms
+          commitHash=$(git rev-parse --short HEAD)
+          echo "##vso[task.setvariable variable=commitHash]$commitHash"
+          echo "$commitHash"
+
+    - task: KubectlInstaller@0
+      displayName: 'Install Kubectl 1.27.3'
+      inputs: 
+        kubectlVersion: 1.27.3 
+
+    - task: HelmInstaller@1
+      displayName: 'Install Helm 3.10.0'
+      inputs:
+        helmVersionToInstall: 3.10.0
+        
+    - template: templates/ps.set_images.yml
+      parameters:
+        customer: "$(customer)"
+        environment: "$(environment)"
+        region: "$(region)"
+        namespace: "$(namespace)"
+
+    - template: templates/task.map_kv_helm.yml
+      parameters:
+        serviceConnectionName: "$(serviceConnectionName)"
+
+    # strapi
+    - template: templates/application.public.yml
+      parameters:
+        serviceName: "strapi"
+        chartPath: "$(chartPath)"
+        serviceConnectionName: "$(serviceConnectionName)"
+        kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+        kubernetesClusterName: "$(kubernetesClusterName)"
+        namespace: "$(namespace)"
+        commitHash: "$(commitHash)"
+        TempVars: "$(TempVars)"
+
+    # authserver
+    - template: templates/application.yml
+      parameters:
+        serviceName: "authserver"
+        imageRepository: "$(imageRepository)/authserver"
+        imageTag: "$(authserverCI)"
+        chartPath: "$(chartPath)"
+        serviceConnectionName: "$(serviceConnectionName)"
+        kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+        kubernetesClusterName: "$(kubernetesClusterName)"
+        namespace: "$(namespace)"
+        commitHash: "$(commitHash)"
+        TempVars: "$(TempVars)"
+
+    # channel-partner-api
+    - template: templates/application.yml
+      parameters:
+        serviceName: "channel-partner-api"
+        imageRepository: "$(imageRepository)/ins-channel-partner"
+        imageTag: "$(channel-partner-apiCI)"
+        chartPath: "$(chartPath)"
+        serviceConnectionName: "$(serviceConnectionName)"
+        kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+        kubernetesClusterName: "$(kubernetesClusterName)"
+        namespace: "$(namespace)"
+        commitHash: "$(commitHash)"
+        TempVars: "$(TempVars)"
+
+    # emailsender
+    - template: templates/application.yml
+      parameters:
+        serviceName: "emailsender"
+        imageRepository: "$(imageRepository)/ins-emailsender"
+        imageTag: "$(emailsenderCI)"
+        chartPath: "$(chartPath)"
+        serviceConnectionName: "$(serviceConnectionName)"
+        kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+        kubernetesClusterName: "$(kubernetesClusterName)"
+        namespace: "$(namespace)"
+        commitHash: "$(commitHash)"
+        TempVars: "$(TempVars)"
+
+    # email-management-api
+    - template: templates/application.yml
+      parameters:
+        serviceName: "email-management-api"
+        imageRepository: "$(imageRepository)/ins-emailmanagement"
+        imageTag: "$(email-management-apiCI)"
+        chartPath: "$(chartPath)"
+        serviceConnectionName: "$(serviceConnectionName)"
+        kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+        kubernetesClusterName: "$(kubernetesClusterName)"
+        namespace: "$(namespace)"
+        commitHash: "$(commitHash)"
+        TempVars: "$(TempVars)"
+
+    # insurance-api
+    - template: templates/application.yml
+      parameters:
+        serviceName: "insurance-api"
+        imageRepository: "$(imageRepository)/insurance-api"
+        imageTag: "$(insurance-apiCI)"
+        chartPath: "$(chartPath)"
+        serviceConnectionName: "$(serviceConnectionName)"
+        kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+        kubernetesClusterName: "$(kubernetesClusterName)"
+        namespace: "$(namespace)"
+        commitHash: "$(commitHash)"
+        TempVars: "$(TempVars)"
+
+    # pdf-gen-api
+    - template: templates/application.yml
+      parameters:
+        serviceName: "pdf-gen-api"
+        imageRepository: "$(imageRepository)/ins-pdf-gen"
+        imageTag: "$(pdf-gen-apiCI)"
+        chartPath: "$(chartPath)"
+        serviceConnectionName: "$(serviceConnectionName)"
+        kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+        kubernetesClusterName: "$(kubernetesClusterName)"
+        namespace: "$(namespace)"
+        commitHash: "$(commitHash)"
+        TempVars: "$(TempVars)"
+
+    # user-api
+    - template: templates/application.yml
+      parameters:
+        serviceName: "user-api"
+        imageRepository: "$(imageRepository)/insuser-api"
+        imageTag: "$(user-apiCI)"
+        chartPath: "$(chartPath)"
+        serviceConnectionName: "$(serviceConnectionName)"
+        kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+        kubernetesClusterName: "$(kubernetesClusterName)"
+        namespace: "$(namespace)"
+        commitHash: "$(commitHash)"
+        TempVars: "$(TempVars)"
+
+    # product-api
+    - template: templates/application.yml
+      parameters:
+        serviceName: "product-api"
+        imageRepository: "$(imageRepository)/insproduct-api"
+        imageTag: "$(product-apiCI)"
+        chartPath: "$(chartPath)"
+        serviceConnectionName: "$(serviceConnectionName)"
+        kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+        kubernetesClusterName: "$(kubernetesClusterName)"
+        namespace: "$(namespace)"
+        commitHash: "$(commitHash)"
+        TempVars: "$(TempVars)"

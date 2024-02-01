@@ -1,0 +1,88 @@
+trigger:
+- none
+
+pool:
+  name: GlowDevPool
+
+resources:
+  repositories:
+  - repository: code_source
+    name: Samsung/glow-cp-email-service
+    type: git
+    trigger: 
+      branches:
+        include:
+        - main
+        - development
+        - ee-development
+        - release/*
+
+variables:
+- group: projectBuild
+- name: applicationName
+  value: 'cp-email-service'
+- name: serviceConnectionName
+  value: 'glow-busby-subs'
+- name: ref
+  value: $[ resources.repositories.code_source.ref ]
+
+name: $(date:yyyyMMdd)-$(rev:r)
+
+stages:
+- stage: Set_env_variables
+  jobs:
+  - job: Define_variables
+    steps:
+    - checkout: self
+    - checkout: code_source
+
+    - bash: echo $(ref)
+    
+    - task: Docker@2
+      displayName: 'Docker build $(applicationName) for glowcontainerregistry'
+      inputs:
+        containerRegistry: 'LandingZone Glow ACR'
+        repository: '$(applicationName)'
+        command: build
+        Dockerfile: 'glow-cp-email-service/Dockerfile'
+        buildContext: 'glow-cp-email-service/'
+        tags: '$(Build.BuildNumber)'
+        arguments: '--build-arg PAT=$(PAT)'
+
+    - task: Docker@2
+      displayName: 'Docker build $(applicationName) for glowacr02'
+      inputs:
+        containerRegistry: 'GlowAcr'
+        repository: '$(applicationName)'
+        command: build
+        Dockerfile: 'glow-cp-email-service/Dockerfile'
+        buildContext: 'glow-cp-email-service/'
+        tags: '$(Build.BuildNumber)'
+        arguments: '--build-arg PAT=$(PAT)'
+
+    - task: Docker@2
+      displayName: 'Docker push $(applicationName) to glowcontainerregistry'
+      inputs:
+        containerRegistry: 'LandingZone Glow ACR'
+        repository: $(applicationName)
+        command: push
+        tags: '$(Build.BuildNumber)'
+
+    - task: Docker@2
+      displayName: 'Docker push $(applicationName) to glowacr02'
+      inputs:
+        containerRegistry: 'GlowAcr'
+        repository: $(applicationName)
+        command: push
+        tags: '$(Build.BuildNumber)'
+
+    - task: AzureCLI@2
+      displayName: Azure CLI
+      inputs:
+        azureSubscription: $(serviceConnectionName)
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: | 
+          echo $(AZURE_DEVOPS_EXT_PAT) | az devops login --organization https://dev.azure.com/glowfs
+          az pipelines variable-group variable create --group-id 21 --name BUILD-SOURCE-BRANCH-$(applicationName)-$(Build.BuildNumber) --value "$(ref)" --organization "https://dev.azure.com/glowfs" --project Samsung || true
+          az pipelines variable-group variable update --group-id 21 --name BUILD-SOURCE-BRANCH-$(applicationName)-$(Build.BuildNumber) --value "$(ref)" --organization "https://dev.azure.com/glowfs" --project Samsung || true

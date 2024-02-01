@@ -1,0 +1,136 @@
+# Variable 'AnchorSettings__CollectionsEndpoint__Account' was defined in the Variables tab
+# Variable 'AnchorSettings__CollectionsEndpoint__EndpointAddress' was defined in the Variables tab
+# Variable 'AnchorSettings__CollectionsEndpoint__Password' was defined in the Variables tab
+# Variable 'AnchorSettings__CollectionsEndpoint__Username' was defined in the Variables tab
+# Variable 'AnchorSettings__ProposalsEndpoint__Account' was defined in the Variables tab
+# Variable 'AnchorSettings__ProposalsEndpoint__EndpointAddress' was defined in the Variables tab
+# Variable 'AnchorSettings__ProposalsEndpoint__Password' was defined in the Variables tab
+# Variable 'AnchorSettings__ProposalsEndpoint__Username' was defined in the Variables tab
+# Variable 'cp_email_client' was defined in the Variables tab
+# Variable 'cp_email_secret' was defined in the Variables tab
+# Variable 'cp_email_tenant' was defined in the Variables tab
+# Variable 'insurtech_impersonate_url' was defined in the Variables tab
+# Variable 'mongo_uri' was defined in the Variables tab
+# Variable 'postgres_password' was defined in the Variables tab
+# Variable 'postgres_username' was defined in the Variables tab
+# Variable 'query_tool_user_pass' was defined in the Variables tab
+# Variable 'slack_bot_smschat' was defined in the Variables tab
+# Variable 'slack_bot_token' was defined in the Variables tab
+# Variable 'test_rail_password' was defined in the Variables tab
+# Variable 'test_rail_username' was defined in the Variables tab
+# Variable 'trRunId' was defined in the Variables tab
+# Variable 'user01_pass' was defined in the Variables tab
+# Variable 'postgres_password_ee' was defined in the Variables tab
+# Variable 'postgres_username_ee' was defined in the Variables tab
+
+# steps:
+#   - task: CmdLine@2
+#     displayName: Set tags
+#     inputs:
+#       script: echo "##vso[build.addbuildtag]$(ENVIRONMENT)"
+#   - task: CmdLine@2
+#     displayName: Run tests
+#     continueOnError: True
+#     enabled: False
+#     inputs:
+#       script: "mvn clean test '-DsuiteXmlFile=src/test/resources/smokeCases_EE.xml' '-DskipTests=false'  '-Denvironment=$(ENVIRONMENT)' '-DwithProxy=$(WITH_PROXY)' "
+#   - task: CmdLine@2
+#     displayName: Run payment cases
+#     continueOnError: True
+#     enabled: False
+#     inputs:
+#       script: mvn clean test "-Dtest=testScripts.EE.Quick_Actions.Make_payment._4_Last_inform_view.TestCase_19352, testScripts.EE.Quick_Actions.Make_payment._4_Last_inform_view.TestCase_19353" "-DskipTests=false"  "-Denvironment=$(ENVIRONMENT)" "-DwithProxy=$(WITH_PROXY)"
+#   - task: CmdLine@2
+#     displayName: Run debug
+#     continueOnError: True
+#     inputs:
+#       script: mvn clean test "-Dtest=testScripts.EE.Account.Security.Security_questions.TestCase19878" "-DskipTests=false"  "-Denvironment=$(ENVIRONMENT)" "-DwithProxy=$(WITH_PROXY)"
+#   - task: CmdLine@2
+#     displayName: Kill chrome like proccesses
+#     condition: always()
+#     continueOnError: True
+#     inputs:
+#       script: >-
+#         #!/bin/bash
+
+#         echo "Список всех процессов:"
+
+#         ps aux
+
+#         # Находим все процессы, содержащие "chrome" в имени
+
+#         processes=$(ps aux | grep -i 'chrome' | grep -v 'grep')
+
+
+#         # Перебираем найденные процессы и завершаем их
+
+#         while read -r process; do
+#           # Получаем идентификатор процесса (PID)
+#           pid=$(echo "$process" | awk '{print $2}')
+#           # Получаем имя процесса
+#           pname=$(echo "$process" | awk '{print $11}')
+#           echo "Завершение процесса: $pid ($pname)"
+#           # Завершаем процесс по его PID
+#           kill -9 "$pid"
+#         done <<< "$processes"
+
+
+#         echo "Все процессы, содержащие 'chrome', завершены."
+#   - task: CmdLine@2
+#     displayName: Allow access for allure
+#     condition: always()
+#     continueOnError: True
+#     inputs:
+#       script: chmod 755 $(Agent.WorkFolder)/_tasks/AllureGenerate_5c975f9d-1c3a-469f-b7c2-8907bf3eacf1/1.3.0/node_modules/allure-commandline/dist/bin/allure
+#   - task: ivang7.allure-test-reports.allure-generate.AllureGenerate@1
+#     displayName: Generate Allure Report
+#     condition: always()
+#     continueOnError: True
+#     inputs:
+#       resultsDir: $(System.DefaultWorkingDirectory)/allure-results
+#       targetDir: $(System.DefaultWorkingDirectory)/allure-report
+#   - task: MichaelClay.azure-pipelines-allure-report-viewer.PublishAllureReport.PublishAllureReport@1
+#     displayName: Publish Allure Report
+#     condition: always()
+#     continueOnError: True
+#     inputs:
+#       reportDir: allure-report
+#   - task: PublishPipelineArtifact@1
+#     displayName: Publish allure results
+#     condition: always()
+#     continueOnError: True
+#     inputs:
+#       path: allure-results
+#       artifactName: allure-results
+#   - task: PublishPipelineArtifact@1
+#     displayName: Publish logs
+#     condition: always()
+#     continueOnError: True
+#     inputs:
+#       path: logs
+#       artifactName: logs
+#   - task: PublishPipelineArtifact@1
+#     displayName: Publish HAR
+#     condition: always()
+#     continueOnError: True
+#     inputs:
+#       path: hars
+#       artifactName: hars
+#   - task: PublishTestResults@2
+#     displayName: Publish Test Results **/TEST-*.xml
+#     condition: always()
+#     continueOnError: True
+#     inputs:
+#       searchFolder: $(System.DefaultWorkingDirectory)/target/surefire-reports/junitreports
+#       mergeTestResults: true
+#       testRunTitle: 'Call agent | Smoke test cases '
+#   - task: calrom-jtejero.CalromEmailReportExtension.CalromEmailReport.CalromEmailReport@1
+#     displayName: Send Email Report Always
+#     condition: always()
+#     inputs:
+#       subject: Cportal Smoke_cases_CallAgent
+#       toAddress: pavel.chachotkin@ventionteams.com;anastasiya.klimuk@ventionteams.com
+#       includeInCcSectionStr: 1
+#       defaultDomain: glowgfs.com
+#       smtpConnectionEndpoint: 5d82cff5-f42b-43a4-bac6-ff55178dba74
+# ...

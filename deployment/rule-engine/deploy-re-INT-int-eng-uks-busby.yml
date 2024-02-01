@@ -1,0 +1,177 @@
+trigger: none
+
+resources:
+  pipelines:
+  - pipeline: build_pipeline_rebuilderapi # Name of the pipeline resource.
+    source: "reBuilderAPI-CI" # The name of the pipeline referenced by this pipeline resource.
+    project: Samsung # Required only if the source pipeline is in another project
+  - pipeline: build_pipeline_rebuilderui # Name of the pipeline resource.
+    source: "reBuilderUI-CI" # The name of the pipeline referenced by this pipeline resource.
+    project: Samsung # Required only if the source pipeline is in another project
+  - pipeline: build_pipeline_recalculationapi # Name of the pipeline resource.
+    source: "reCalculationAPI-CI" # The name of the pipeline referenced by this pipeline resource.
+    project: Samsung # Required only if the source pipeline is in another project
+  - pipeline: build_pipeline_reexecutionapi # Name of the pipeline resource.
+    source: "reExecutionAPI-CI" # The name of the pipeline referenced by this pipeline resource.
+    project: Samsung # Required only if the source pipeline is in another project
+  - pipeline: build_pipeline_reexecutionui # Name of the pipeline resource.
+    source: "reExecutionUI-CI" # The name of the pipeline referenced by this pipeline resource.
+    project: Samsung # Required only if the source pipeline is in another project
+  - pipeline: build_pipeline_reworker # Name of the pipeline resource.
+    source: "reWorker-CI" # The name of the pipeline referenced by this pipeline resource.
+    project: Samsung # Required only if the source pipeline is in another project
+  repositories:
+  - repository: helm
+    type: git
+    name: Samsung/helms
+    trigger: none
+    ref: refs/heads/main
+
+variables:
+  customer: 'busby'
+  environment: 'int'
+  region: 'uks'
+  namespace: 'int-eng'
+  serviceConnectionName: 'glow-busby-subs'
+  kubernetesClusterResourceGroup: "rg-dev-uks-busby"
+  kubernetesClusterName: "dev-uks-busby"
+  chartPath: "helms/helms/rule-engine"
+
+
+name: deploy-RE-INT-uks-busby-$(date:yyyyMMdd)-buildID-$(Build.BuildId)
+
+pool:
+  name: GlowDevPool
+
+stages:  
+- stage: Deploy_release
+  jobs:  
+  - job: Deploy 
+    steps:
+    - checkout: self
+    # - checkout: release
+    - checkout: helm
+
+    - task: AzureKeyVault@2
+      displayName: 'Export Azure Key Vault secrets from kv-$(environment)-$(region)-$(customer)'
+      inputs:
+        azureSubscription: $(serviceConnectionName)
+        KeyVaultName: kv-$(environment)-$(region)-$(customer)
+        RunAsPreJob: true
+
+    - task: AzureCLI@2
+      displayName: 'Set commitHash'
+      inputs:
+        azureSubscription: $(serviceConnectionName)
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          cd helms
+          commitHash=$(git rev-parse --short HEAD)
+          echo "##vso[task.setvariable variable=commitHash]$commitHash"
+          echo "$commitHash"
+
+    - task: KubectlInstaller@0
+      displayName: 'Install Kubectl 1.27.3'
+      inputs: 
+        kubectlVersion: 1.27.3 
+
+    - task: HelmInstaller@1
+      displayName: 'Install Helm 3.10.0'
+      inputs:
+        helmVersionToInstall: 3.10.0
+        
+    # - template: templates/ps.set_images.yml
+    #   parameters:
+    #     customer: "$(customer)"
+    #     environment: "$(environment)"
+    #     region: "$(region)"
+    #     namespace: "$(namespace)"
+
+    - template: ../templates/task.map_kv_helm.yml
+      parameters:
+        serviceConnectionName: "$(serviceConnectionName)"
+
+    # rebuilderapi
+    - template: ../templates/application.yml
+      parameters:
+        serviceName: "rebuilderapi"
+        imageRepository: "$(imageRepository)/re-builder-api"
+        imageTag: "$(resources.pipeline.build_pipeline_rebuilderapi.runName)"
+        chartPath: "$(chartPath)"
+        serviceConnectionName: "$(serviceConnectionName)"
+        kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+        kubernetesClusterName: "$(kubernetesClusterName)"
+        namespace: "$(namespace)"
+        commitHash: "$(commitHash)"
+        TempVars: "$(TempVars)"
+
+    # rebuilderui
+    - template: ../templates/application.yml
+      parameters:
+        serviceName: "rebuilderui"
+        imageRepository: "$(imageRepository)/re-builder-ui"
+        imageTag: "$(resources.pipeline.build_pipeline_rebuilderui.runName)"
+        chartPath: "$(chartPath)"
+        serviceConnectionName: "$(serviceConnectionName)"
+        kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+        kubernetesClusterName: "$(kubernetesClusterName)"
+        namespace: "$(namespace)"
+        commitHash: "$(commitHash)"
+        TempVars: "$(TempVars)"
+
+    # recalculationapi
+    - template: ../templates/application.yml
+      parameters:
+        serviceName: "recalculationapi"
+        imageRepository: "$(imageRepository)/re-calculation-api"
+        imageTag: "$(resources.pipeline.build_pipeline_recalculationapi.runName)"
+        chartPath: "$(chartPath)"
+        serviceConnectionName: "$(serviceConnectionName)"
+        kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+        kubernetesClusterName: "$(kubernetesClusterName)"
+        namespace: "$(namespace)"
+        commitHash: "$(commitHash)"
+        TempVars: "$(TempVars)"
+
+    # reexecutionapi
+    - template: ../templates/application.yml
+      parameters:
+        serviceName: "reexecutionapi"
+        imageRepository: "$(imageRepository)/re-execution-api"
+        imageTag: "$(resources.pipeline.build_pipeline_reexecutionapi.runName)"
+        chartPath: "$(chartPath)"
+        serviceConnectionName: "$(serviceConnectionName)"
+        kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+        kubernetesClusterName: "$(kubernetesClusterName)"
+        namespace: "$(namespace)"
+        commitHash: "$(commitHash)"
+        TempVars: "$(TempVars)"
+
+    # reexecutionui
+    - template: ../templates/application.yml
+      parameters:
+        serviceName: "reexecutionui"
+        imageRepository: "$(imageRepository)/re-execution-ui"
+        imageTag: "$(resources.pipeline.build_pipeline_reexecutionui.runName)"
+        chartPath: "$(chartPath)"
+        serviceConnectionName: "$(serviceConnectionName)"
+        kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+        kubernetesClusterName: "$(kubernetesClusterName)"
+        namespace: "$(namespace)"
+        commitHash: "$(commitHash)"
+        TempVars: "$(TempVars)"
+
+    # reworker
+    - template: ../templates/application.yml
+      parameters:
+        serviceName: "reworker"
+        imageRepository: "$(imageRepository)/re-worker"
+        imageTag: "$(resources.pipeline.build_pipeline_reworker.runName)"
+        chartPath: "$(chartPath)"
+        serviceConnectionName: "$(serviceConnectionName)"
+        kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+        kubernetesClusterName: "$(kubernetesClusterName)"
+        namespace: "$(namespace)"
+        commitHash: "$(commitHash)"
+        TempVars: "$(TempVars)"

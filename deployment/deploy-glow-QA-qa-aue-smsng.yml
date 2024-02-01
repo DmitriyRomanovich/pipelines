@@ -1,0 +1,359 @@
+trigger: none
+
+resources:
+  repositories:
+  - repository: release
+    type: git
+    name: Samsung/ReleaseVersion
+    trigger: none
+    ref: refs/heads/main
+  - repository: helm
+    type: git
+    name: Samsung/helms
+    trigger: none
+    ref: refs/heads/main
+
+variables:
+  customer: 'smsng'
+  environment: 'qa'
+  region: 'aue'
+  namespace: 'qa'
+  serviceConnectionName: 'Azure subscription 1(65de260e-4df4-4b57-9aa6-726e772d3246)'
+  kubernetesClusterResourceGroup: "rg-dev-aue-smsng"
+  kubernetesClusterName: "dev-aue-smsng"
+  chartPath: "helms/helms/glow-origination"
+
+name: deploy-glow-QA-aue-smsng-$(date:yyyyMMdd)-buildID-$(Build.BuildId)
+
+pool:
+  name: GlowDevPool
+
+stages:  
+- stage: Deploy_release
+  jobs:  
+  - job: Deploy 
+    steps:
+    - checkout: self
+    - checkout: release
+    - checkout: helm
+
+    - task: AzureKeyVault@2
+      displayName: 'Export Azure Key Vault secrets from kv-$(environment)-$(region)-$(customer)'
+      inputs:
+        azureSubscription: $(serviceConnectionName)
+        KeyVaultName: kv-$(environment)-$(region)-$(customer)
+        RunAsPreJob: true
+
+    - task: AzureCLI@2
+      displayName: 'Set commitHash'
+      inputs:
+        azureSubscription: $(serviceConnectionName)
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          cd helms
+          commitHash=$(git rev-parse --short HEAD)
+          echo "##vso[task.setvariable variable=commitHash]$commitHash"
+          echo "$commitHash"
+
+    - task: KubectlInstaller@0
+      displayName: 'Install Kubectl 1.27.3'
+      inputs: 
+        kubectlVersion: 1.27.3 
+
+    - task: HelmInstaller@1
+      displayName: 'Install Helm 3.10.0'
+      inputs:
+        helmVersionToInstall: 3.10.0
+        
+    - template: templates/ps.set_images.yml
+      parameters:
+        customer: "$(customer)"
+        environment: "$(environment)"
+        region: "$(region)"
+        namespace: "$(namespace)"
+
+    - template: templates/task.map_kv_helm.yml
+      parameters:
+        serviceConnectionName: "$(serviceConnectionName)"
+
+    # static glowui
+    - template: templates/static_site_and_cdn_glowui.yml
+      parameters:
+        serviceName: "glowui"
+        imageTag: "$(glowuiCI)"
+        staticSiteStorageAccountName: "$(staticGlowUIAccountName)"
+        staticSiteStorageAccountKey: "$(staticGlowUIAccountKey)"
+        cdnProfileResourceGroup: "rg-dev-$(region)-$(customer)"
+        cdnProfileName: "DevAueSmsngCDN"
+        serviceConnectionName: "$(serviceConnectionName)"
+        customer: "$(customer)"
+        environment: "$(environment)"
+        region: "$(region)"
+
+    # static paymentui
+    - template: templates/static_site_and_cdn_paymentui.yml
+      parameters:
+        serviceName: "paymentui"
+        imageTag: "$(paymentuiCI)"
+        staticSiteStorageAccountName: "$(staticPaymentUIAccountName)"
+        staticSiteStorageAccountKey: "$(staticPaymentUIAccountKey)"
+        cdnProfileResourceGroup: "rg-dev-$(region)-$(customer)"
+        cdnProfileName: "DevAueSmsngCDN"
+        serviceConnectionName: "$(serviceConnectionName)"
+        customer: "$(customer)"
+        environment: "$(environment)"
+        region: "$(region)"
+
+    # loanapi
+    - template: templates/application.yml
+      parameters:
+        serviceName: "loanapi"
+        imageRepository: "$(imageRepository)/loanapi"
+        imageTag: "$(loanapiCI)"
+        chartPath: "$(chartPath)"
+        serviceConnectionName: "$(serviceConnectionName)"
+        kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+        kubernetesClusterName: "$(kubernetesClusterName)"
+        namespace: "$(namespace)"
+        commitHash: "$(commitHash)"
+        TempVars: "$(TempVars)"
+
+    # accertify
+    - template: templates/application.yml
+      parameters:
+        serviceName: "accertify"
+        imageRepository: "$(imageRepository)/accertify"
+        imageTag: "$(accertifyCI)"
+        chartPath: "$(chartPath)"
+        serviceConnectionName: "$(serviceConnectionName)"
+        kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+        kubernetesClusterName: "$(kubernetesClusterName)"
+        namespace: "$(namespace)"
+        commitHash: "$(commitHash)"
+        TempVars: "$(TempVars)"
+
+    # agreementnumbergenerator
+    - template: templates/application.yml
+      parameters:
+        serviceName: "agreementnumbergenerator"
+        imageRepository: "$(imageRepository)/agreementnumbergenerator"
+        imageTag: "$(agreementnumbergeneratorCI)"
+        chartPath: "$(chartPath)"
+        serviceConnectionName: "$(serviceConnectionName)"
+        kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+        kubernetesClusterName: "$(kubernetesClusterName)"
+        namespace: "$(namespace)"
+        commitHash: "$(commitHash)"
+        TempVars: "$(TempVars)"
+
+    # bankapi
+    - template: templates/application.yml
+      parameters:
+        serviceName: "bankapi"
+        imageRepository: "$(imageRepository)/bankapi"
+        imageTag: "$(bankapiCI)"
+        chartPath: "$(chartPath)"
+        serviceConnectionName: "$(serviceConnectionName)"
+        kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+        kubernetesClusterName: "$(kubernetesClusterName)"
+        namespace: "$(namespace)"
+        commitHash: "$(commitHash)"
+        TempVars: "$(TempVars)"
+
+    # calc
+    - template: templates/application.yml
+      parameters:
+        serviceName: "calc"
+        imageRepository: "$(imageRepository)/calc"
+        imageTag: "$(calcCI)"
+        chartPath: "$(chartPath)"
+        serviceConnectionName: "$(serviceConnectionName)"
+        kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+        kubernetesClusterName: "$(kubernetesClusterName)"
+        namespace: "$(namespace)"
+        commitHash: "$(commitHash)"
+        TempVars: "$(TempVars)"
+
+    # demo-back
+    - template: templates/application.yml
+      parameters:
+        serviceName: "demo-back"
+        imageRepository: "$(imageRepository)/demo-back"
+        imageTag: "$(demo-backCI)"
+        chartPath: "$(chartPath)"
+        serviceConnectionName: "$(serviceConnectionName)"
+        kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+        kubernetesClusterName: "$(kubernetesClusterName)"
+        namespace: "$(namespace)"
+        commitHash: "$(commitHash)"
+        TempVars: "$(TempVars)"
+
+    # demo-ui
+    - template: templates/application.yml
+      parameters:
+        serviceName: "demo-ui"
+        imageRepository: "$(imageRepository)/demo-ui"
+        imageTag: "$(demo-uiCI)"
+        chartPath: "$(chartPath)"
+        serviceConnectionName: "$(serviceConnectionName)"
+        kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+        kubernetesClusterName: "$(kubernetesClusterName)"
+        namespace: "$(namespace)"
+        commitHash: "$(commitHash)"
+        TempVars: "$(TempVars)"
+
+    # eventbushandler
+    - template: templates/application.yml
+      parameters:
+        serviceName: "eventbushandler"
+        imageRepository: "$(imageRepository)/eventbushandler"
+        imageTag: "$(eventbushandlerCI)"
+        chartPath: "$(chartPath)"
+        serviceConnectionName: "$(serviceConnectionName)"
+        kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+        kubernetesClusterName: "$(kubernetesClusterName)"
+        namespace: "$(namespace)"
+        commitHash: "$(commitHash)"
+        TempVars: "$(TempVars)"
+
+    # externalhealthchecker
+    - template: templates/application.yml
+      parameters:
+        serviceName: "externalhealthchecker"
+        imageRepository: "$(imageRepository)/externalhealthchecker"
+        imageTag: "$(externalhealthcheckerCI)"
+        chartPath: "$(chartPath)"
+        serviceConnectionName: "$(serviceConnectionName)"
+        kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+        kubernetesClusterName: "$(kubernetesClusterName)"
+        namespace: "$(namespace)"
+        commitHash: "$(commitHash)"
+        TempVars: "$(TempVars)"
+
+    # loanui
+    - template: templates/application.yml
+      parameters:
+        serviceName: "loanui"
+        imageRepository: "$(imageRepository)/loanui"
+        imageTag: "$(loanuiCI)"
+        chartPath: "$(chartPath)"
+        serviceConnectionName: "$(serviceConnectionName)"
+        kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+        kubernetesClusterName: "$(kubernetesClusterName)"
+        namespace: "$(namespace)"
+        commitHash: "$(commitHash)"
+        TempVars: "$(TempVars)"
+
+    # mitek-pooling
+    - template: templates/application.yml
+      parameters:
+        serviceName: "mitek-pooling"
+        imageRepository: "$(imageRepository)/mitek-pooling"
+        imageTag: "$(mitek-poolingCI)"
+        chartPath: "$(chartPath)"
+        serviceConnectionName: "$(serviceConnectionName)"
+        kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+        kubernetesClusterName: "$(kubernetesClusterName)"
+        namespace: "$(namespace)"
+        commitHash: "$(commitHash)"
+        TempVars: "$(TempVars)"
+
+    # prsconnector
+    - template: templates/application.yml
+      parameters:
+        serviceName: "prsconnector"
+        imageRepository: "$(imageRepository)/prsconnector"
+        imageTag: "$(prsconnectorCI)"
+        chartPath: "$(chartPath)"
+        serviceConnectionName: "$(serviceConnectionName)"
+        kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+        kubernetesClusterName: "$(kubernetesClusterName)"
+        namespace: "$(namespace)"
+        commitHash: "$(commitHash)"
+        TempVars: "$(TempVars)"
+
+    # servicemanagement
+    - template: templates/application.yml
+      parameters:
+        serviceName: "servicemanagement"
+        imageRepository: "$(imageRepository)/servicemanagement"
+        imageTag: "$(servicemanagementCI)"
+        chartPath: "$(chartPath)"
+        serviceConnectionName: "$(serviceConnectionName)"
+        kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+        kubernetesClusterName: "$(kubernetesClusterName)"
+        namespace: "$(namespace)"
+        commitHash: "$(commitHash)"
+        TempVars: "$(TempVars)"
+
+    # signalr
+    - template: templates/application.yml
+      parameters:
+        serviceName: "signalr"
+        imageRepository: "$(imageRepository)/signalr"
+        imageTag: "$(signalrCI)"
+        chartPath: "$(chartPath)"
+        serviceConnectionName: "$(serviceConnectionName)"
+        kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+        kubernetesClusterName: "$(kubernetesClusterName)"
+        namespace: "$(namespace)"
+        commitHash: "$(commitHash)"
+        TempVars: "$(TempVars)"
+
+    # shadowchecker
+    - template: templates/application.yml
+      parameters:
+        serviceName: "shadowchecker"
+        imageRepository: "$(imageRepository)/shadowchecker"
+        imageTag: "$(shadowcheckerCI)"
+        chartPath: "$(chartPath)"
+        serviceConnectionName: "$(serviceConnectionName)"
+        kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+        kubernetesClusterName: "$(kubernetesClusterName)"
+        namespace: "$(namespace)"
+        commitHash: "$(commitHash)"
+        TempVars: "$(TempVars)"
+
+    # querytool
+    - template: templates/application.yml
+      parameters:
+        serviceName: "querytool"
+        imageRepository: "$(imageRepository)/querytool"
+        imageTag: "$(querytoolCI)"
+        chartPath: "$(chartPath)"
+        serviceConnectionName: "$(serviceConnectionName)"
+        kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+        kubernetesClusterName: "$(kubernetesClusterName)"
+        namespace: "$(namespace)"
+        commitHash: "$(commitHash)"
+        TempVars: "$(TempVars)"
+
+    # worker
+    - template: templates/application.yml
+      parameters:
+        serviceName: "worker"
+        imageRepository: "$(imageRepository)/worker"
+        imageTag: "$(workerCI)"
+        chartPath: "$(chartPath)"
+        serviceConnectionName: "$(serviceConnectionName)"
+        kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+        kubernetesClusterName: "$(kubernetesClusterName)"
+        namespace: "$(namespace)"
+        commitHash: "$(commitHash)"
+        TempVars: "$(TempVars)"
+
+    # glowapi
+    - template: templates/application.replica.yml
+      parameters:
+        serviceName: "glowapi"
+        imageRepository: "$(imageRepository)/glowapi"
+        imageTag: "$(glowapiCI)"
+        chartPath: "$(chartPath)"
+        serviceConnectionName: "$(serviceConnectionName)"
+        kubernetesClusterResourceGroup: "$(kubernetesClusterResourceGroup)"
+        kubernetesClusterName: "$(kubernetesClusterName)"
+        namespace: "$(namespace)"
+        commitHash: "$(commitHash)"
+        TempVars: "$(TempVars)"
+        replicaCount: 1

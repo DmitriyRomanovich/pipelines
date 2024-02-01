@@ -1,0 +1,82 @@
+### Typical calling task:
+    # # static paymentui
+    # - template: templates/static_site_and_cdn_paymentui.yml
+    #   parameters:
+    #     serviceName: "paymentui"
+    #     imageTag: "$(paymentuiCI)"
+    #     staticSiteStorageAccountName: "$(staticPaymentUIAccountName)"
+    #     staticSiteStorageAccountKey: "$(staticPaymentUIAccountKey)"
+    #     cdnProfileResourceGroup: "rg-$(environment)-$(region)-$(customer)"
+    #     cdnProfileName: "cdnp-$(environment)-$(region)-$(customer)"  
+    #     serviceConnectionName: "$(serviceConnectionName)"
+    #     customer: "$(customer)"
+    #     environment: "$(environment)"
+    #     region: "$(region)"
+
+parameters:
+  - name: serviceConnectionName
+  - name: imageTag
+  - name: serviceName
+  - name: staticSiteStorageAccountName # staticPaymentUIAccountName
+  - name: staticSiteStorageAccountKey # staticPaymentUIAccountKey
+  - name: customer
+  - name: environment
+  - name: region
+  - name: cdnProfileResourceGroup
+  - name: cdnProfileName
+
+steps:
+
+  ### glowui ###
+
+  - task: AzureCLI@2
+    displayName: 'Copy ${{ parameters.serviceName }} data from build storage account to local'
+    inputs:
+      azureSubscription: ${{ parameters.serviceConnectionName }}
+      scriptType: bash
+      scriptLocation: inlineScript
+      inlineScript: |
+        az config set extension.use_dynamic_install=yes_without_prompt
+        mkdir -p $(System.DefaultWorkingDirectory)/${{ parameters.imageTag }}/${{ parameters.serviceName }}
+        az storage azcopy blob download -c "${{ parameters.serviceName }}-${{ parameters.imageTag }}" --account-name $(lzStaticBuildAccountName) -s '*' -d "$(System.DefaultWorkingDirectory)/${{ parameters.imageTag }}/${{ parameters.serviceName }}" --recursive --account-key $(lzStaticBuildAccountKey)
+
+  - task: AzureCLI@2
+    displayName: 'Generate config.js for ${{ parameters.serviceName }}'
+    inputs:
+      azureSubscription: ${{ parameters.serviceConnectionName }}
+      scriptType: bash
+      scriptLocation: inlineScript
+      inlineScript: |
+        mkdir -p $(System.DefaultWorkingDirectory)/${{ parameters.imageTag }}/${{ parameters.serviceName }}/configs
+        cat <<EOT > $(System.DefaultWorkingDirectory)/${{ parameters.imageTag }}/${{ parameters.serviceName }}/configs/config.js
+        window._config_ = {
+          GLOW_DOMAIN: '$(apiUrlGlow)'
+        };
+        EOT
+
+  - task: AzureCLI@2
+    displayName: 'Remove data from ${{ parameters.serviceName }} static blob'
+    inputs:
+      azureSubscription: ${{ parameters.serviceConnectionName }}
+      scriptType: bash
+      scriptLocation: inlineScript
+      inlineScript: |
+        az storage azcopy blob delete -c '$web' --account-name ${{ parameters.staticSiteStorageAccountName }} --recursive --account-key ${{ parameters.staticSiteStorageAccountKey }}
+
+  - task: AzureCLI@2
+    displayName: 'Copy new data to ${{ parameters.serviceName }} static blob'
+    inputs:
+      azureSubscription: ${{ parameters.serviceConnectionName }}
+      scriptType: bash
+      scriptLocation: inlineScript
+      inlineScript: |
+        az storage azcopy blob upload -c '$web' --account-name ${{ parameters.staticSiteStorageAccountName }} -s "$(System.DefaultWorkingDirectory)/${{ parameters.imageTag }}/${{ parameters.serviceName }}/*" --recursive --account-key ${{ parameters.staticSiteStorageAccountKey }}
+
+  - task: AzureCLI@2
+    displayName: 'CDN purge ${{ parameters.serviceName }}'
+    inputs:
+      azureSubscription: ${{ parameters.serviceConnectionName }}
+      scriptType: bash
+      scriptLocation: inlineScript
+      inlineScript: |
+        az cdn endpoint purge -g ${{ parameters.cdnProfileResourceGroup }} -n ${{ parameters.staticSiteStorageAccountName }} --profile-name ${{ parameters.cdnProfileName }} --content-paths '/*'

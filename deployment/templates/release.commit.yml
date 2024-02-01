@@ -1,0 +1,21 @@
+parameters:
+  - name: customer
+  - name: environment
+  - name: region
+  - name: namespace
+  - name: application
+  - name: imageTag
+
+steps:
+  - bash: |
+      cd ReleaseVersion
+      git fetch origin
+      git reset --hard origin/main
+      git pull origin HEAD:main
+      sed -i 's/^${{ parameters.application }}=.*/${{ parameters.application }}=${{ parameters.imageTag }}/' ${{ parameters.customer }}-${{ parameters.environment }}-${{ parameters.region }}/${{ parameters.namespace }}.txt
+      git config --global user.email "glowfs@dev.azure.com"
+      git config --global user.name "deployment-pipeline"
+      git add "${{ parameters.customer }}-${{ parameters.environment }}-${{ parameters.region }}/${{ parameters.namespace }}.txt"
+      git commit -m "update ${{ parameters.application }} to the new version ${{ parameters.imageTag }} for ${{ parameters.environment }}-${{ parameters.customer }}-${{ parameters.region }}"
+      git push origin HEAD:main
+    displayName: "Commit update to ReleaseVersion for ${{ parameters.application }}"
